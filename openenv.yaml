@@ -1,0 +1,72 @@
+name: ab-test-contamination-forensics
+version: "1.0.0"
+description: >
+  An experimentation auditing environment where agents identify
+  statistical contamination in A/B test results.
+
+author: "Abhijeet"
+license: MIT
+tags:
+  - openenv
+  - experimentation
+  - causal-reasoning
+  - statistics
+  - forensics
+
+observation_space:
+  type: structured
+  schema: ExperimentObservation
+  progressive_disclosure: true
+
+action_space:
+  type: discrete_structured
+  schema: AuditAction
+  n_actions: 11
+  terminal_actions:
+    - flag_contamination
+    - approve_result
+    - request_rerun
+
+reward:
+  range: [-0.50, 1.00]
+  dense: true
+  sparse_terminal: true
+  calibration_signal: true
+
+tasks:
+  - id: 1
+    name: sample_ratio_mismatch
+    difficulty: easy
+    description: Detect SRM in a single contaminated experiment.
+  - id: 2
+    name: simpsons_paradox_novelty
+    difficulty: medium
+    description: Detect Simpson's paradox + secondary metric reversal.
+  - id: 3
+    name: multi_layer_contamination
+    difficulty: hard
+    description: Detect simultaneous contamination mechanisms.
+  - id: 4
+    name: clean_with_red_herrings
+    difficulty: expert
+    description: Correctly approve a valid experiment despite misleading signals.
+
+episode:
+  max_steps: 15
+  termination: terminal_action | budget_exhausted | invalid_action_limit
+
+api:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  health: GET /health
+
+inference:
+  script: inference.py
+  env_vars:
+    - API_BASE_URL
+    - MODEL_NAME
+    - HF_TOKEN
+  runtime_limit_minutes: 20
+  reproducible: true
+  seeds: [42, 123, 7]
