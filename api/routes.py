@@ -1,14 +1,17 @@
-"""Barebones API routes with hardcoded environment responses."""
+"""API routes wired to environment core modules with progressive reveal behavior."""
 
-from datetime import date
-from typing import Any, Dict, Literal
-from uuid import uuid4
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from env.action_executor import ActionExecutor
+from env.data_generator import DataGenerator
+from env.observation_builder import ObservationBuilder
+from env.state_manager import StateManager
 from models.action import AuditAction
-from models.observation import AggregateResult, ExperimentMeta, ExperimentObservation
+from models.observation import ExperimentObservation
+from tasks.task_generator import TaskGenerator
 
 
 router = APIRouter()
@@ -30,7 +33,7 @@ class StepResult(BaseModel):
     info: Dict[str, Any] = Field(default_factory=dict)
 
 
-class SessionState(BaseModel):
+class SessionStateResponse(BaseModel):
     """Simplified session state for phase-1 stub."""
 
     session_id: str
@@ -39,63 +42,6 @@ class SessionState(BaseModel):
     executed_queries: list[str]
     episode_done: bool
     cumulative_reward: float
-
-
-SESSIONS: Dict[str, SessionState] = {}
-
-
-def _available_queries() -> list[str]:
-    """Return complete query/action catalog as required by the blueprint."""
-
-    return [
-        "query_subgroup",
-        "query_temporal",
-        "run_srm_check",
-        "query_assignment_overlap",
-        "check_network_exposure",
-        "inspect_randomization",
-        "query_secondary_metrics",
-        "compute_mde",
-        "flag_contamination",
-        "approve_result",
-        "request_rerun",
-    ]
-
-
-def _hardcoded_observation(session_id: str, steps_taken: int = 0) -> ExperimentObservation:
-    """Build a deterministic hardcoded observation for scaffold/testing."""
-
-    max_steps = 15
-    return ExperimentObservation(
-        session_id=session_id,
-        experiment_id="exp_2024_growth_007",
-        primary_metric="D7 retention rate",
-        aggregate_results=AggregateResult(
-            control_mean=0.412,
-            treatment_mean=0.433,
-            relative_lift=0.051,
-            absolute_lift=0.021,
-            p_value=0.03,
-            control_count=61847,
-            treatment_count=48203,
-            confidence_interval_lower=0.005,
-            confidence_interval_upper=0.038,
-        ),
-        experiment_metadata=ExperimentMeta(
-            start_date=date(2024, 1, 15),
-            end_date=date(2024, 2, 15),
-            targeting_rule="all_users_18+ in US",
-            intended_split=0.50,
-            randomization_unit="user_id",
-            platform="mobile_ios",
-            experiment_owner="growth_team",
-            hypothesis="Improved onboarding increases D7 retention",
-        ),
-        available_queries=_available_queries(),
-        steps_taken=steps_taken,
-        steps_remaining=max_steps - steps_taken,
-    )
-
 
 @router.get("/health")
 def health() -> Dict[str, str]:
@@ -106,69 +52,114 @@ def health() -> Dict[str, str]:
 
 @router.post("/reset", response_model=ExperimentObservation)
 def reset(payload: ResetRequest) -> ExperimentObservation:
-    """Reset environment state and return a hardcoded initial observation."""
+    """Reset session using task sampling, synthetic data generation, and state init."""
 
-    session_id = f"session_{uuid4().hex[:12]}"
-    SESSIONS[session_id] = SessionState(
-        session_id=session_id,
-        step_count=0,
-        steps_remaining=15,
-        executed_queries=[],
-        episode_done=False,
-        cumulative_reward=0.0,
-    )
-    _ = payload  # kept for API compatibility with future implementation
-    return _hardcoded_observation(session_id=session_id, steps_taken=0)
+    spec = TaskGenerator.sample(task_id=payload.task_id, seed=payload.seed)
+    data = DataGenerator.generate(spec=spec, seed=payload.seed)
+    state = StateManager.init(task_id=payload.task_id, seed=payload.seed, spec=spec, data=data, max_steps=15)
+    return ObservationBuilder.build_initial(state)
 
 
 @router.post("/step", response_model=StepResult)
 def step(action: AuditAction, session_id: str) -> StepResult:
-    """Advance one step using dummy logic and return hardcoded result."""
+    """Execute one environment step using validation/execution core components."""
 
-    state = SESSIONS.get(session_id)
+    state = StateManager.get(session_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown session_id")
 
+    try:
+        validated_action = AuditAction(**action.model_dump())
+    except ValidationError as exc:
+        StateManager.mark_invalid_action(state, str(exc))
+        observation = ObservationBuilder.build_updated(state)
+        return StepResult(
+            observation=observation,
+            reward=0.0,
+            done=state.episode_done,
+            info={"error": str(exc), "termination_reason": state.termination_reason},
+        )
+
     if state.episode_done:
         return StepResult(
-            observation=_hardcoded_observation(session_id=session_id, steps_taken=state.step_count),
+            observation=ObservationBuilder.build_updated(state),
             reward=0.0,
             done=True,
             info={"message": "episode already terminated"},
         )
 
-    state.step_count += 1
-    state.steps_remaining = max(0, 15 - state.step_count)
+    execution = ActionExecutor.execute(validated_action, state)
+    if not execution.accepted:
+        StateManager.mark_invalid_action(state, execution.error or "Invalid action")
+        observation = ObservationBuilder.build_updated(state)
+        return StepResult(
+            observation=observation,
+            reward=0.0,
+            done=state.episode_done,
+            info={"error": execution.error, "termination_reason": state.termination_reason},
+        )
 
-    terminal_action: tuple[str, ...] = ("flag_contamination", "approve_result", "request_rerun")
-    if action.action_type not in terminal_action:
-        state.executed_queries.append(action.action_type)
+    if execution.is_duplicate:
+        state.cumulative_reward += execution.reward_delta
+        StateManager.log_event(
+            state,
+            event_type="duplicate_action",
+            payload={
+                "action": validated_action.model_dump(),
+                "reward": execution.reward_delta,
+            },
+        )
+        return StepResult(
+            observation=ObservationBuilder.build_updated(state),
+            reward=execution.reward_delta,
+            done=False,
+            info={"cached": True, "cumulative_reward": round(state.cumulative_reward, 4)},
+        )
 
-    done = action.action_type in terminal_action or state.step_count >= 15
-    reward = -0.01 if not done else 0.0
+    state.invalid_action_count = 0
 
-    if done:
+    if execution.revealed_key is not None:
+        state.revealed_data[execution.revealed_key] = execution.revealed_value
+        if execution.revealed_key not in state.executed_queries:
+            state.executed_queries.append(execution.revealed_key)
+
+    StateManager.consume_step(state)
+
+    if execution.is_terminal:
         state.episode_done = True
+        state.termination_reason = "agent_verdict"
 
+    reward = execution.reward_delta
     state.cumulative_reward += reward
 
-    observation = _hardcoded_observation(session_id=session_id, steps_taken=state.step_count)
+    observation = ObservationBuilder.build_updated(state)
+    StateManager.log_event(
+        state,
+        event_type="step",
+        payload={
+            "action": validated_action.model_dump(),
+            "reward": reward,
+            "done": state.episode_done,
+            "termination_reason": state.termination_reason,
+            "steps_taken": state.step_count,
+        },
+    )
     return StepResult(
         observation=observation,
         reward=reward,
-        done=done,
+        done=state.episode_done,
         info={
-            "termination_reason": "agent_verdict" if action.action_type in terminal_action else None,
+            "termination_reason": state.termination_reason,
             "cumulative_reward": round(state.cumulative_reward, 4),
         },
     )
 
 
-@router.get("/state", response_model=SessionState)
-def state(session_id: str) -> SessionState:
+@router.get("/state", response_model=SessionStateResponse)
+def state(session_id: str) -> SessionStateResponse:
     """Return phase-1 in-memory session state."""
 
-    session = SESSIONS.get(session_id)
+    session = StateManager.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Unknown session_id")
-    return session
+    return SessionStateResponse(**StateManager.public_state(session))
