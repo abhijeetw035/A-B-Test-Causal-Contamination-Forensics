@@ -1,4 +1,4 @@
-"""Deterministic grading stubs."""
+"""Deterministic episode grader for contamination forensics tasks."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ TYPE_MATCH_MATRIX: dict[tuple[str, str], float] = {
     ("novelty_effect", "simpsons_paradox"): 0.1,
 }
 
+TERMINAL_ACTIONS: set[str] = {"flag_contamination", "approve_result", "request_rerun"}
 
 RELEVANT_QUERY_MAP: dict[str, set[str]] = {
     "clean": {"run_srm_check", "query_temporal", "query_assignment_overlap"},
@@ -25,23 +26,25 @@ RELEVANT_QUERY_MAP: dict[str, set[str]] = {
     "sutva_violation": {"query_assignment_overlap", "check_network_exposure", "compute_mde"},
     "novelty_effect": {"query_temporal", "query_secondary_metrics"},
     "simpsons_paradox": {"query_temporal", "query_subgroup", "query_secondary_metrics"},
-    "network_spillover": {"check_network_exposure", "query_assignment_overlap", "query_subgroup"},
+    "network_spillover": {"query_assignment_overlap", "check_network_exposure"},
     "multiple_testing": {"query_secondary_metrics", "compute_mde"},
     "underpowered_overclaim": {"compute_mde", "query_temporal"},
 }
 
 
-TERMINAL_ACTIONS: set[str] = {"flag_contamination", "approve_result", "request_rerun"}
+def _clamp(value: float, low: float, high: float) -> float:
+    """Clamp numeric value to an inclusive range."""
+    return max(low, min(high, value))
 
 
 def _extract_actions(episode_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract action entries from either flat or event-based episode logs.
+    """Extract action objects from flat or event-style episode logs.
 
     Args:
-        episode_log: Raw episode records.
+        episode_log: Episode records where actions may be top-level or nested.
 
     Returns:
-        Normalized action dictionaries with action_type/parameters/confidence.
+        Ordered list of action dictionaries.
     """
     actions: list[dict[str, Any]] = []
     for entry in episode_log:
@@ -49,21 +52,22 @@ def _extract_actions(episode_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
             actions.append(entry)
             continue
 
-        payload = entry.get("payload", {})
-        action = payload.get("action")
-        if isinstance(action, dict) and "action_type" in action:
-            actions.append(action)
+        payload = entry.get("payload")
+        if isinstance(payload, dict):
+            action = payload.get("action")
+            if isinstance(action, dict) and "action_type" in action:
+                actions.append(action)
     return actions
 
 
 def _extract_final_action(episode_log: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return the final terminal action if present, else latest action.
+    """Extract the final action, preferring terminal actions when present.
 
     Args:
-        episode_log: Raw episode records.
+        episode_log: Episode records.
 
     Returns:
-        Best-effort terminal/final action payload dictionary.
+        The last terminal action dictionary, or the last action if no terminal action exists.
     """
     actions = _extract_actions(episode_log)
     if not actions:
@@ -75,28 +79,15 @@ def _extract_final_action(episode_log: list[dict[str, Any]]) -> dict[str, Any]:
     return actions[-1]
 
 
-def _query_is_relevant(action_type: str, spec: ContaminationSpec) -> bool:
-    """Check whether an investigative query is relevant for the contamination type.
+def _evidence_strength_at_step(queries_executed: list[str], spec: ContaminationSpec) -> float:
+    """Compute evidence strength from required and relevant query coverage.
 
     Args:
-        action_type: Query action type.
+        queries_executed: Action types executed up to a step.
         spec: Hidden contamination specification.
 
     Returns:
-        True when the query is informative for this contamination type.
-    """
-    return action_type in RELEVANT_QUERY_MAP.get(spec.contamination_type, set())
-
-
-def _compute_evidence_strength(queries_executed: list[str], spec: ContaminationSpec) -> float:
-    """Estimate evidence strength from required and relevant query coverage.
-
-    Args:
-        queries_executed: Ordered list of executed action types.
-        spec: Hidden contamination specification.
-
-    Returns:
-        Continuous evidence score in [0.0, 1.0].
+        Evidence strength score in [0.0, 1.0].
     """
     executed = {q for q in queries_executed if q not in TERMINAL_ACTIONS}
     required = set(spec.required_queries or [])
@@ -104,25 +95,24 @@ def _compute_evidence_strength(queries_executed: list[str], spec: ContaminationS
 
     required_coverage = 1.0 if not required else len(executed & required) / len(required)
     relevant_coverage = 0.0 if not relevant else len(executed & relevant) / len(relevant)
-    strength = 0.7 * required_coverage + 0.3 * relevant_coverage
-    return max(0.0, min(1.0, strength))
+    return _clamp((0.7 * required_coverage) + (0.3 * relevant_coverage), 0.0, 1.0)
 
 
 def _verify_evidence_facts(claimed_facts: list[str], spec: ContaminationSpec) -> float:
-    """Verify factual claims against ground-truth evidence with numeric tolerance.
+    """Verify evidence facts against ground truth with tolerant numeric matching.
 
     Args:
-        claimed_facts: List of agent-provided factual strings.
-        spec: Hidden contamination specification containing ground truth evidence.
+        claimed_facts: Facts provided in terminal contamination report.
+        spec: Hidden contamination specification with ground_truth_evidence.
 
     Returns:
-        Fraction of checkable claims that match the ground truth.
+        Fraction of checkable facts that are correct in [0.0, 1.0].
     """
     if not claimed_facts:
         return 0.0
 
-    gt = spec.ground_truth_evidence or {}
-    if not gt:
+    ground_truth = spec.ground_truth_evidence or {}
+    if not ground_truth:
         return 0.0
 
     checked = 0
@@ -130,56 +120,52 @@ def _verify_evidence_facts(claimed_facts: list[str], spec: ContaminationSpec) ->
 
     for fact in claimed_facts:
         lower_fact = fact.lower()
-        for key, value in gt.items():
+        for key, gt_value in ground_truth.items():
             key_phrase = key.replace("_", " ")
             if key_phrase not in lower_fact:
                 continue
 
             checked += 1
 
-            if isinstance(value, bool):
-                expected = "true" if value else "false"
+            if isinstance(gt_value, str):
+                if gt_value.lower() in lower_fact:
+                    matched += 1
+                continue
+
+            if isinstance(gt_value, bool):
+                expected = "true" if gt_value else "false"
                 if expected in lower_fact:
                     matched += 1
                 continue
 
-            if isinstance(value, str):
-                if value.lower() in lower_fact:
-                    matched += 1
-                continue
-
-            if isinstance(value, (int, float)):
-                nums = re.findall(r"[-+]?\d*\.?\d+", fact)
-                if not nums:
+            if isinstance(gt_value, (int, float)):
+                numbers = re.findall(r"[-+]?\d*\.?\d+", fact)
+                if not numbers:
                     continue
-                candidate = float(nums[-1])
+                candidate = float(numbers[-1])
                 if "%" in fact:
                     candidate /= 100.0
 
-                tolerance = 0.10 * max(abs(float(value)), 1e-6)
-                if abs(candidate - float(value)) <= tolerance:
+                tolerance = 0.10 * max(abs(float(gt_value)), 1e-6)
+                if abs(candidate - float(gt_value)) <= tolerance:
                     matched += 1
-                continue
 
     return 0.0 if checked == 0 else matched / checked
 
 
 class Grader:
-    """Grades completed episode logs against hidden contamination specs."""
+    """Deterministic grader with fixed weighted scoring dimensions."""
 
     @staticmethod
-    def grade_episode(
-        episode_log: list[dict[str, Any]],
-        spec: ContaminationSpec,
-    ) -> dict[str, Any]:
-        """Grade a full episode log and return a structured score payload.
+    def grade_episode(episode_log: list[dict[str, Any]], spec: ContaminationSpec) -> dict[str, Any]:
+        """Grade an episode and return weighted score breakdown.
 
         Args:
-            episode_log: Ordered list of action and reward records for an episode.
-            spec: Hidden contamination specification for ground-truth evaluation.
+            episode_log: Full episode actions/events.
+            spec: Hidden contamination specification for ground truth.
 
         Returns:
-            A score dictionary containing final score and breakdown fields.
+            A dictionary with `final_score`, `breakdown`, and metadata.
         """
         actions = _extract_actions(episode_log)
         final_action = _extract_final_action(episode_log)
@@ -211,13 +197,14 @@ class Grader:
         confidence_actions = [a for a in actions if isinstance(a.get("confidence"), (int, float))]
         if len(confidence_actions) >= 2:
             calibration_errors: list[float] = []
-            action_types_so_far: list[str] = []
+            seen_actions: list[str] = []
+
             for action in actions:
                 action_type = str(action.get("action_type", ""))
-                action_types_so_far.append(action_type)
+                seen_actions.append(action_type)
                 confidence = action.get("confidence")
                 if isinstance(confidence, (int, float)):
-                    expected = _compute_evidence_strength(action_types_so_far, spec)
+                    expected = _evidence_strength_at_step(seen_actions, spec)
                     calibration_errors.append(abs(float(confidence) - expected))
 
             avg_error = sum(calibration_errors) / max(len(calibration_errors), 1)
@@ -241,8 +228,8 @@ class Grader:
             "calibration": 0.08,
         }
 
-        final_score = sum(breakdown[key] * weights[key] for key in weights)
-        final_score = max(0.0, min(1.0, final_score))
+        final_score = sum(breakdown[k] * weights[k] for k in weights)
+        final_score = _clamp(final_score, 0.0, 1.0)
 
         return {
             "final_score": round(final_score, 4),
@@ -256,7 +243,6 @@ class Grader:
 __all__ = [
     "Grader",
     "TYPE_MATCH_MATRIX",
-    "_compute_evidence_strength",
-    "_query_is_relevant",
     "_verify_evidence_facts",
+    "_evidence_strength_at_step",
 ]
