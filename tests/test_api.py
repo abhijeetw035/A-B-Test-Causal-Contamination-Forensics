@@ -153,3 +153,19 @@ def test_budget_exhaustion_terminates_when_step_budget_reached() -> None:
     final_state = client.get(f"/state?session_id={session_id}")
     assert final_state.status_code == 200
     assert final_state.json()["episode_done"] is True
+
+
+def test_session_logs_are_accessible_for_grading() -> None:
+    """Session logs should be readable from memory and persisted JSONL."""
+    session_id = _create_session(task_id=1, seed=707)
+
+    step = client.post(f"/step?session_id={session_id}", json=_valid_action("run_srm_check"))
+    assert step.status_code == 200
+
+    memory_log = StateManager.get_episode_log(session_id)
+    disk_log = StateManager.read_persisted_episode_log(session_id)
+
+    assert len(memory_log) >= 2
+    assert len(disk_log) >= 2
+    assert any(event.get("event_type") == "step" for event in memory_log)
+    assert any(event.get("event_type") == "step" for event in disk_log)

@@ -1,6 +1,5 @@
 """API routes wired to environment core modules with progressive reveal behavior."""
 
-import os
 from copy import deepcopy
 from typing import Any, Dict
 
@@ -45,9 +44,6 @@ class SessionStateResponse(BaseModel):
     executed_queries: list[str]
     episode_done: bool
     cumulative_reward: float
-
-
-USE_REAL_DATA_GENERATOR = os.getenv("OPENENV_USE_REAL_DATA_GENERATOR", "false").strip().lower() == "true"
 
 
 def _build_mock_data_bundle(task_id: int, seed: int) -> dict[str, Any]:
@@ -218,6 +214,34 @@ def _build_mock_data_bundle(task_id: int, seed: int) -> dict[str, Any]:
         "query_payloads": query_payloads,
     }
 
+
+def _compute_observation_delta(previous: ExperimentObservation, current: ExperimentObservation) -> dict[str, Any]:
+    """Compute a compact observation delta for logging.
+
+    Args:
+        previous: Observation prior to handling an action.
+        current: Observation after handling an action.
+
+    Returns:
+        Dictionary with newly revealed fields and step counter changes.
+    """
+    prev_dump = previous.model_dump()
+    curr_dump = current.model_dump()
+
+    newly_revealed = [
+        key
+        for key, value in curr_dump.items()
+        if value is not None and prev_dump.get(key) is None
+    ]
+
+    return {
+        "newly_revealed_fields": newly_revealed,
+        "steps_taken_before": prev_dump.get("steps_taken", 0),
+        "steps_taken_after": curr_dump.get("steps_taken", 0),
+        "steps_remaining_before": prev_dump.get("steps_remaining", 0),
+        "steps_remaining_after": curr_dump.get("steps_remaining", 0),
+    }
+
 @router.get("/health")
 def health() -> Dict[str, str]:
     """Health probe endpoint for container/platform checks."""
@@ -231,16 +255,12 @@ def reset(payload: ResetRequest) -> ExperimentObservation:
 
     spec = TaskGenerator.sample(task_id=payload.task_id, seed=payload.seed)
 
-    data_mode = "mock_fixture"
-    data = _build_mock_data_bundle(task_id=payload.task_id, seed=payload.seed)
-
-    if USE_REAL_DATA_GENERATOR:
-        try:
-            data = DataGenerator.generate(spec=spec, seed=payload.seed)
-            data_mode = "real_generator"
-        except Exception as exc:  # pragma: no cover - fallback safety net
-            data = _build_mock_data_bundle(task_id=payload.task_id, seed=payload.seed)
-            data_mode = "mock_fixture_fallback"
+    data_mode = "real_generator"
+    try:
+        data = DataGenerator.generate(spec=spec, seed=payload.seed)
+    except Exception:  # pragma: no cover - fallback safety net
+        data = _build_mock_data_bundle(task_id=payload.task_id, seed=payload.seed)
+        data_mode = "mock_fixture_fallback"
 
     state = StateManager.init(task_id=payload.task_id, seed=payload.seed, spec=spec, data=data, max_steps=15)
     StateManager.log_event(state, event_type="data_mode_selected", payload={"mode": data_mode})
@@ -255,11 +275,20 @@ def step(action: AuditAction, session_id: str) -> StepResult:
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown session_id")
 
+    previous_observation = ObservationBuilder.build_updated(state)
+
     try:
         validated_action = AuditAction(**action.model_dump())
     except ValidationError as exc:
-        StateManager.mark_invalid_action(state, str(exc))
         observation = ObservationBuilder.build_updated(state)
+        observation_delta = _compute_observation_delta(previous_observation, observation)
+        StateManager.mark_invalid_action(
+            state,
+            str(exc),
+            action=action.model_dump(),
+            reward=0.0,
+            observation_delta=observation_delta,
+        )
         return StepResult(
             observation=observation,
             reward=0.0,
@@ -277,8 +306,15 @@ def step(action: AuditAction, session_id: str) -> StepResult:
 
     execution = ActionExecutor.execute(validated_action, state)
     if not execution.accepted:
-        StateManager.mark_invalid_action(state, execution.error or "Invalid action")
         observation = ObservationBuilder.build_updated(state)
+        observation_delta = _compute_observation_delta(previous_observation, observation)
+        StateManager.mark_invalid_action(
+            state,
+            execution.error or "Invalid action",
+            action=validated_action.model_dump(),
+            reward=0.0,
+            observation_delta=observation_delta,
+        )
         return StepResult(
             observation=observation,
             reward=0.0,
@@ -288,16 +324,21 @@ def step(action: AuditAction, session_id: str) -> StepResult:
 
     if execution.is_duplicate:
         state.cumulative_reward += execution.reward_delta
+        observation = ObservationBuilder.build_updated(state)
+        observation_delta = _compute_observation_delta(previous_observation, observation)
         StateManager.log_event(
             state,
             event_type="duplicate_action",
             payload={
                 "action": validated_action.model_dump(),
                 "reward": execution.reward_delta,
+                "done": state.episode_done,
+                "termination_reason": state.termination_reason,
+                "observation_delta": observation_delta,
             },
         )
         return StepResult(
-            observation=ObservationBuilder.build_updated(state),
+            observation=observation,
             reward=execution.reward_delta,
             done=False,
             info={"cached": True, "cumulative_reward": round(state.cumulative_reward, 4)},
@@ -320,6 +361,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
     state.cumulative_reward += reward
 
     observation = ObservationBuilder.build_updated(state)
+    observation_delta = _compute_observation_delta(previous_observation, observation)
     StateManager.log_event(
         state,
         event_type="step",
@@ -329,6 +371,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
             "done": state.episode_done,
             "termination_reason": state.termination_reason,
             "steps_taken": state.step_count,
+            "observation_delta": observation_delta,
         },
     )
     return StepResult(

@@ -136,6 +136,9 @@ def _generate_temporal_breakdown(
 
     rows: list[dict[str, Any]] = []
     half_life = spec.novelty_half_life_days or 4
+    outage_day = None
+    if spec.contamination_type == "clean":
+        outage_day = int((spec.ground_truth_evidence or {}).get("outage_day", 4))
 
     for idx in range(n_days):
         day = start_date + timedelta(days=idx)
@@ -149,6 +152,17 @@ def _generate_temporal_breakdown(
             decay = 0.5 ** (idx / max(half_life, 1))
             novelty_lift = (spec.visible_effect_size * 2.5) * decay
             t_mean = _clamp(c_mean * (1.0 + novelty_lift), 1e-4, 1 - 1e-4)
+        elif spec.contamination_type == "simpsons_paradox":
+            if idx <= 2:
+                # Early spike from cohort composition confound.
+                t_mean = _clamp(c_mean * 1.22, 1e-4, 1 - 1e-4)
+            else:
+                # Later periods flatten/reverse to expose paradox.
+                t_mean = _clamp(c_mean * (0.99 + rng.normal(0.0, 0.005)), 1e-4, 1 - 1e-4)
+        elif spec.contamination_type == "clean" and outage_day is not None and (idx + 1) == outage_day:
+            # Red herring: one-day symmetric outage dip that should not imply contamination.
+            c_mean = _clamp(c_mean * 0.88, 1e-4, 1 - 1e-4)
+            t_mean = _clamp(c_mean * (1.0 + rng.normal(0.0, 0.002)), 1e-4, 1 - 1e-4)
         else:
             t_mean = _clamp(treatment_rate + rng.normal(0.0, 0.004), 1e-4, 1 - 1e-4)
 
@@ -485,7 +499,11 @@ class DataGenerator:
             "notes": (
                 "Detected stale bucketing cache during rollout."
                 if spec.contamination_type == "srm"
-                else "No assignment anomalies detected."
+                else (
+                    f"Platform outage observed on day {(spec.ground_truth_evidence or {}).get('outage_day', 4)}; affected both arms symmetrically."
+                    if spec.contamination_type == "clean"
+                    else "No assignment anomalies detected."
+                )
             ),
         }
 

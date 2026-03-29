@@ -110,12 +110,23 @@ class StateManager:
         return cls._sessions.get(session_id)
 
     @classmethod
-    def mark_invalid_action(cls, state: EpisodeState, error_message: str) -> None:
+    def mark_invalid_action(
+        cls,
+        state: EpisodeState,
+        error_message: str,
+        *,
+        action: dict[str, Any] | None = None,
+        reward: float = 0.0,
+        observation_delta: dict[str, Any] | None = None,
+    ) -> None:
         """Increment invalid action counter and terminate when threshold is reached.
 
         Args:
             state: Current episode state.
             error_message: Validation error details for logging.
+            action: Action payload that caused invalidation, if available.
+            reward: Step reward associated with this invalid action.
+            observation_delta: Observation changes resulting from this action.
         """
         state.invalid_action_count += 1
         if state.invalid_action_count >= 3:
@@ -125,7 +136,14 @@ class StateManager:
         cls.log_event(
             state,
             event_type="invalid_action",
-            payload={"error": error_message, "invalid_action_count": state.invalid_action_count},
+            payload={
+                "action": action,
+                "error": error_message,
+                "reward": reward,
+                "invalid_action_count": state.invalid_action_count,
+                "termination_reason": state.termination_reason,
+                "observation_delta": observation_delta or {},
+            },
         )
 
     @classmethod
@@ -191,3 +209,43 @@ class StateManager:
         log_path = cls._log_dir / f"{session_id}.jsonl"
         with log_path.open("a", encoding="utf-8") as file_obj:
             file_obj.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+    @classmethod
+    def get_episode_log(cls, session_id: str) -> list[dict[str, Any]]:
+        """Return in-memory episode log for a given session.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            Ordered in-memory event list for the session, or empty list.
+        """
+        state = cls.get(session_id)
+        if state is None:
+            return []
+        return list(state.episode_log)
+
+    @classmethod
+    def read_persisted_episode_log(cls, session_id: str) -> list[dict[str, Any]]:
+        """Read persisted JSONL episode log records for grading/replay.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            List of decoded event dictionaries from disk.
+        """
+        import json
+
+        log_path = cls._log_dir / f"{session_id}.jsonl"
+        if not log_path.exists():
+            return []
+
+        events: list[dict[str, Any]] = []
+        with log_path.open("r", encoding="utf-8") as file_obj:
+            for line in file_obj:
+                line = line.strip()
+                if not line:
+                    continue
+                events.append(json.loads(line))
+        return events
