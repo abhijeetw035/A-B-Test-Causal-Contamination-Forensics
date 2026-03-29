@@ -67,7 +67,7 @@ def _two_proportion_stats(
         "treatment_mean": round(p2, 6),
         "absolute_lift": round(diff, 6),
         "relative_lift": round(_safe_relative_lift(p1, p2), 6),
-        "p_value": round(float(_clamp(p_value, 0.0, 1.0)), 8),
+        "p_value": round(float(_clamp(p_value, 1e-12, 1.0)), 12),
         "confidence_interval_lower": round(diff - margin, 6),
         "confidence_interval_upper": round(diff + margin, 6),
     }
@@ -254,8 +254,10 @@ def _mde_payload(
     required = int(np.ceil(numerator / (effect**2)))
 
     # Ensure explicitly underpowered behavior for the dedicated contamination type.
-    if contamination_type == "underpowered_overclaim":
+    if contamination_type in {"underpowered_overclaim", "sutva_violation"}:
         required = max(required, actual_sample_per_arm * 3)
+    elif contamination_type == "clean":
+        required = min(required, max(1000, int(actual_sample_per_arm * 0.85)))
 
     se_h1 = np.sqrt(max(p1 * (1.0 - p1) / actual_sample_per_arm + p2 * (1.0 - p2) / actual_sample_per_arm, 1e-16))
     z_effect = effect / se_h1
@@ -316,7 +318,17 @@ class DataGenerator:
         Returns:
             Dictionary containing initial observation fields and all revealable query payloads.
         """
-        rng = np.random.default_rng(seed)
+        seed_offsets = {
+            "clean": 11,
+            "srm": 23,
+            "sutva_violation": 37,
+            "novelty_effect": 41,
+            "simpsons_paradox": 53,
+            "network_spillover": 67,
+            "multiple_testing": 79,
+            "underpowered_overclaim": 97,
+        }
+        rng = np.random.default_rng(seed + seed_offsets[spec.contamination_type])
 
         total_count = int(rng.integers(10_000, 500_001))
         intended_split = 0.50
