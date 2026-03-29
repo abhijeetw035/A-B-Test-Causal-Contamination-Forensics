@@ -86,7 +86,7 @@ def test_duplicate_query_returns_cached_data_without_consuming_step() -> None:
     first_payload = first.json()
     second_payload = second.json()
 
-    assert first_payload["reward"] == -0.01
+    assert first_payload["reward"] > 0.0
     assert second_payload["reward"] == -0.03
     assert second_payload["info"]["cached"] is True
 

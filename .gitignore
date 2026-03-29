@@ -1,3 +1,68 @@
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Logs and runtime data
+logs/
+logs/**
+logs/episodes/*.jsonl
+*.log
+baseline_results.json
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Environment variables and secrets
+.env
+.env.*
+secrets.*
+*.pem
+*.key
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints
+
+# Local blueprint copies / drafts
+ab_test_contamination_openenv_blueprint 5.35.49 PM.md
+ab_test_contamination_openenv_blueprint.md
+
+# Misc
+Thumbs.db
 
 .venv/
 ab_test_contamination_openenv_blueprint 5.35.49 PM.md

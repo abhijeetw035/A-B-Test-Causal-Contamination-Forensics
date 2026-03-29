@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from env.action_executor import ActionExecutor
 from env.data_generator import DataGenerator
 from env.observation_builder import ObservationBuilder
+from env.reward_engine import RewardEngine
 from env.state_manager import StateManager
 from env.synthetic_fixtures import CLEAN_EXPERIMENT_FIXTURE, CONTAMINATED_EXPERIMENT_FIXTURE
 from models.action import AuditAction
@@ -323,7 +324,8 @@ def step(action: AuditAction, session_id: str) -> StepResult:
         )
 
     if execution.is_duplicate:
-        state.cumulative_reward += execution.reward_delta
+        reward = execution.reward_delta
+        state.cumulative_reward += reward
         observation = ObservationBuilder.build_updated(state)
         observation_delta = _compute_observation_delta(previous_observation, observation)
         StateManager.log_event(
@@ -331,7 +333,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
             event_type="duplicate_action",
             payload={
                 "action": validated_action.model_dump(),
-                "reward": execution.reward_delta,
+                "reward": reward,
                 "done": state.episode_done,
                 "termination_reason": state.termination_reason,
                 "observation_delta": observation_delta,
@@ -339,7 +341,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
         )
         return StepResult(
             observation=observation,
-            reward=execution.reward_delta,
+            reward=reward,
             done=False,
             info={"cached": True, "cumulative_reward": round(state.cumulative_reward, 4)},
         )
@@ -351,13 +353,15 @@ def step(action: AuditAction, session_id: str) -> StepResult:
         if execution.revealed_key not in state.executed_queries:
             state.executed_queries.append(execution.revealed_key)
 
+    reward_result = RewardEngine.compute(validated_action, state, state.spec)
+
     StateManager.consume_step(state)
 
     if execution.is_terminal:
         state.episode_done = True
         state.termination_reason = "agent_verdict"
 
-    reward = execution.reward_delta
+    reward = reward_result.step_reward
     state.cumulative_reward += reward
 
     observation = ObservationBuilder.build_updated(state)
@@ -372,6 +376,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
             "termination_reason": state.termination_reason,
             "steps_taken": state.step_count,
             "observation_delta": observation_delta,
+            "reward_components": reward_result.components,
         },
     )
     return StepResult(
@@ -381,6 +386,7 @@ def step(action: AuditAction, session_id: str) -> StepResult:
         info={
             "termination_reason": state.termination_reason,
             "cumulative_reward": round(state.cumulative_reward, 4),
+            "reward_components": reward_result.components,
         },
     )
 
