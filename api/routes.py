@@ -1,5 +1,7 @@
 """API routes wired to environment core modules with progressive reveal behavior."""
 
+import os
+from copy import deepcopy
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +11,7 @@ from env.action_executor import ActionExecutor
 from env.data_generator import DataGenerator
 from env.observation_builder import ObservationBuilder
 from env.state_manager import StateManager
+from env.synthetic_fixtures import CLEAN_EXPERIMENT_FIXTURE, CONTAMINATED_EXPERIMENT_FIXTURE
 from models.action import AuditAction
 from models.observation import ExperimentObservation
 from tasks.task_generator import TaskGenerator
@@ -43,6 +46,178 @@ class SessionStateResponse(BaseModel):
     episode_done: bool
     cumulative_reward: float
 
+
+USE_REAL_DATA_GENERATOR = os.getenv("OPENENV_USE_REAL_DATA_GENERATOR", "false").strip().lower() == "true"
+
+
+def _build_mock_data_bundle(task_id: int, seed: int) -> dict[str, Any]:
+    """Build a DataGenerator-compatible payload using static fixtures.
+
+    This keeps ObservationBuilder/ActionExecutor unblocked while real generation
+    logic is developed independently.
+    """
+    base_fixture = CLEAN_EXPERIMENT_FIXTURE if task_id == 4 else CONTAMINATED_EXPERIMENT_FIXTURE
+    fixture = deepcopy(base_fixture)
+
+    experiment_id = f"{fixture['experiment_id']}_t{task_id}_s{seed}"
+    aggregate = fixture["aggregate_results"]
+    control_count = int(aggregate["control_count"])
+    treatment_count = int(aggregate["treatment_count"])
+
+    query_payloads: dict[str, Any] = {
+        "run_srm_check": {
+            "expected_split": 0.5,
+            "actual_split": round(treatment_count / max(control_count + treatment_count, 1), 6),
+            "chi_square_statistic": 12.31 if task_id != 4 else 0.18,
+            "p_value": 0.00045 if task_id != 4 else 0.671,
+            "srm_detected": task_id != 4,
+            "severity": "mild" if task_id != 4 else "none",
+        },
+        "query_temporal": [
+            {
+                "date": fixture["experiment_metadata"]["start_date"],
+                "control_mean": aggregate["control_mean"],
+                "treatment_mean": aggregate["treatment_mean"],
+                "relative_lift": aggregate["relative_lift"],
+                "control_count": control_count // 2,
+                "treatment_count": treatment_count // 2,
+            },
+            {
+                "date": fixture["experiment_metadata"]["end_date"],
+                "control_mean": aggregate["control_mean"],
+                "treatment_mean": aggregate["treatment_mean"],
+                "relative_lift": aggregate["relative_lift"],
+                "control_count": control_count - (control_count // 2),
+                "treatment_count": treatment_count - (treatment_count // 2),
+            },
+        ],
+        "query_subgroup": {
+            "device_type": [
+                {
+                    "dimension": "device_type",
+                    "value": "ios",
+                    "control_mean": aggregate["control_mean"],
+                    "treatment_mean": aggregate["treatment_mean"],
+                    "relative_lift": aggregate["relative_lift"],
+                    "control_count": max(control_count // 3, 1),
+                    "treatment_count": max(treatment_count // 3, 1),
+                }
+            ],
+            "country": [
+                {
+                    "dimension": "country",
+                    "value": "us",
+                    "control_mean": aggregate["control_mean"],
+                    "treatment_mean": aggregate["treatment_mean"],
+                    "relative_lift": aggregate["relative_lift"],
+                    "control_count": max(control_count // 2, 1),
+                    "treatment_count": max(treatment_count // 2, 1),
+                }
+            ],
+            "enrollment_cohort": [
+                {
+                    "dimension": "enrollment_cohort",
+                    "value": "days_1_3",
+                    "control_mean": aggregate["control_mean"],
+                    "treatment_mean": aggregate["treatment_mean"],
+                    "relative_lift": aggregate["relative_lift"],
+                    "control_count": max(control_count // 2, 1),
+                    "treatment_count": max(treatment_count // 2, 1),
+                }
+            ],
+            "user_segment": [
+                {
+                    "dimension": "user_segment",
+                    "value": "returning",
+                    "control_mean": aggregate["control_mean"],
+                    "treatment_mean": aggregate["treatment_mean"],
+                    "relative_lift": aggregate["relative_lift"],
+                    "control_count": max(control_count // 2, 1),
+                    "treatment_count": max(treatment_count // 2, 1),
+                }
+            ],
+            "platform_version": [
+                {
+                    "dimension": "platform_version",
+                    "value": "v2",
+                    "control_mean": aggregate["control_mean"],
+                    "treatment_mean": aggregate["treatment_mean"],
+                    "relative_lift": aggregate["relative_lift"],
+                    "control_count": max(control_count // 2, 1),
+                    "treatment_count": max(treatment_count // 2, 1),
+                }
+            ],
+        },
+        "query_assignment_overlap": {
+            "experiment_ids": [experiment_id, "exp_2024_pricing_011"],
+            "overlap_fractions": {
+                experiment_id: {
+                    "control": 0.71 if task_id == 3 else 0.09,
+                    "treatment": 0.28 if task_id == 3 else 0.11,
+                }
+            },
+        },
+        "check_network_exposure": {
+            "control_all": 0.23 if task_id == 3 else 0.03,
+            "control_high_degree": 0.34 if task_id == 3 else 0.05,
+            "control_low_degree": 0.14 if task_id == 3 else 0.02,
+        },
+        "inspect_randomization": {
+            "algorithm": "hash_mod_user_id",
+            "seed": seed,
+            "assignment_log_complete": True,
+            "notes": "Fixture mode: replaying mock assignment traces.",
+        },
+        "query_secondary_metrics": {
+            "session_length": {
+                "control_mean": round(max(aggregate["control_mean"] - 0.03, 0.0001), 6),
+                "treatment_mean": round(max(aggregate["treatment_mean"] - 0.03, 0.0001), 6),
+                "relative_lift": aggregate["relative_lift"],
+                "absolute_lift": aggregate["absolute_lift"],
+                "p_value": aggregate["p_value"],
+                "control_count": control_count,
+                "treatment_count": treatment_count,
+                "confidence_interval_lower": aggregate["confidence_interval_lower"],
+                "confidence_interval_upper": aggregate["confidence_interval_upper"],
+            },
+            "revenue_per_user": {
+                "control_mean": round(max(aggregate["control_mean"] - 0.08, 0.0001), 6),
+                "treatment_mean": round(max(aggregate["treatment_mean"] - 0.08, 0.0001), 6),
+                "relative_lift": aggregate["relative_lift"],
+                "absolute_lift": aggregate["absolute_lift"],
+                "p_value": aggregate["p_value"],
+                "control_count": control_count,
+                "treatment_count": treatment_count,
+                "confidence_interval_lower": aggregate["confidence_interval_lower"],
+                "confidence_interval_upper": aggregate["confidence_interval_upper"],
+            },
+        },
+        "compute_mde": {
+            "observed_effect_size": aggregate["absolute_lift"],
+            "required_sample_per_arm": int(max(control_count, treatment_count) * (2 if task_id != 4 else 1)),
+            "actual_sample_per_arm": int(min(control_count, treatment_count)),
+            "achieved_power": 0.79 if task_id != 4 else 0.92,
+            "underpowered": task_id != 4,
+        },
+        "peer_experiment_list": [
+            {
+                "experiment_id": "exp_2024_pricing_011",
+                "randomization_unit": "user_id",
+                "time_overlap": True,
+                "owner": "monetization_team",
+            }
+        ],
+    }
+
+    return {
+        "experiment_id": experiment_id,
+        "primary_metric": fixture["primary_metric"],
+        "aggregate_results": fixture["aggregate_results"],
+        "experiment_metadata": fixture["experiment_metadata"],
+        "available_queries": fixture["available_queries"],
+        "query_payloads": query_payloads,
+    }
+
 @router.get("/health")
 def health() -> Dict[str, str]:
     """Health probe endpoint for container/platform checks."""
@@ -55,8 +230,20 @@ def reset(payload: ResetRequest) -> ExperimentObservation:
     """Reset session using task sampling, synthetic data generation, and state init."""
 
     spec = TaskGenerator.sample(task_id=payload.task_id, seed=payload.seed)
-    data = DataGenerator.generate(spec=spec, seed=payload.seed)
+
+    data_mode = "mock_fixture"
+    data = _build_mock_data_bundle(task_id=payload.task_id, seed=payload.seed)
+
+    if USE_REAL_DATA_GENERATOR:
+        try:
+            data = DataGenerator.generate(spec=spec, seed=payload.seed)
+            data_mode = "real_generator"
+        except Exception as exc:  # pragma: no cover - fallback safety net
+            data = _build_mock_data_bundle(task_id=payload.task_id, seed=payload.seed)
+            data_mode = "mock_fixture_fallback"
+
     state = StateManager.init(task_id=payload.task_id, seed=payload.seed, spec=spec, data=data, max_steps=15)
+    StateManager.log_event(state, event_type="data_mode_selected", payload={"mode": data_mode})
     return ObservationBuilder.build_initial(state)
 
 
