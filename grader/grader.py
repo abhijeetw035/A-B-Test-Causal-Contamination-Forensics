@@ -79,7 +79,7 @@ def _extract_final_action(episode_log: list[dict[str, Any]]) -> dict[str, Any]:
     return actions[-1]
 
 
-def _evidence_strength_at_step(queries_executed: list[str], spec: ContaminationSpec) -> float:
+def _compute_evidence_strength(queries_executed: list[str], spec: ContaminationSpec) -> float:
     """Compute evidence strength from required and relevant query coverage.
 
     Args:
@@ -96,6 +96,19 @@ def _evidence_strength_at_step(queries_executed: list[str], spec: ContaminationS
     required_coverage = 1.0 if not required else len(executed & required) / len(required)
     relevant_coverage = 0.0 if not relevant else len(executed & relevant) / len(relevant)
     return _clamp((0.7 * required_coverage) + (0.3 * relevant_coverage), 0.0, 1.0)
+
+
+def _evidence_strength_at_step(queries_executed: list[str], spec: ContaminationSpec) -> float:
+    """Backward-compatible alias for step-wise evidence strength computation.
+
+    Args:
+        queries_executed: Action types executed up to a step.
+        spec: Hidden contamination specification.
+
+    Returns:
+        Evidence strength score in [0.0, 1.0].
+    """
+    return _compute_evidence_strength(queries_executed, spec)
 
 
 def _verify_evidence_facts(claimed_facts: list[str], spec: ContaminationSpec) -> float:
@@ -204,7 +217,7 @@ class Grader:
                 seen_actions.append(action_type)
                 confidence = action.get("confidence")
                 if isinstance(confidence, (int, float)):
-                    expected = _evidence_strength_at_step(seen_actions, spec)
+                    expected = _compute_evidence_strength(seen_actions, spec)
                     calibration_errors.append(abs(float(confidence) - expected))
 
             avg_error = sum(calibration_errors) / max(len(calibration_errors), 1)
@@ -244,5 +257,6 @@ __all__ = [
     "Grader",
     "TYPE_MATCH_MATRIX",
     "_verify_evidence_facts",
+    "_compute_evidence_strength",
     "_evidence_strength_at_step",
 ]
