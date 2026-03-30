@@ -7,8 +7,9 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+import httpx
 from fastapi.testclient import TestClient
 from openai import OpenAI
 
@@ -21,10 +22,12 @@ from env.state_manager import StateManager
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+ENV_BASE_URL = (os.getenv("ENV_BASE_URL") or os.getenv("HF_SPACE_URL") or "").rstrip("/")
 
 MAX_STEPS = int(os.getenv("MAX_STEPS", "12"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
+REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 TASKS = [1, 2, 3]
 SEEDS = [42, 123, 7]
 OUTPUT_FILE = Path("baseline_results.json")
@@ -110,6 +113,53 @@ class LocalAPIEnvironment:
             raise RuntimeError("Unable to locate current session/spec for grading.")
 
         return Grader.grade_episode(state.episode_log, state.spec)
+
+
+class EnvironmentAdapter(Protocol):
+    """Minimal environment adapter contract for local/remote inference."""
+
+    def reset(self, task_id: int, seed: int) -> dict[str, Any]:
+        """Reset the environment and return initial observation."""
+
+    def step(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Execute one action and return a step result payload."""
+
+    def grade_last_episode(self) -> dict[str, Any] | None:
+        """Return grading payload when available, else None."""
+
+
+class RemoteAPIEnvironment:
+    """Adapter for a deployed HTTP environment (e.g., HF Space)."""
+
+    def __init__(self, base_url: str, timeout_seconds: float = REQUEST_TIMEOUT_SECONDS) -> None:
+        """Initialize remote HTTP client and active session pointer."""
+        if not base_url:
+            raise ValueError("Remote base URL is required for RemoteAPIEnvironment")
+
+        self._base_url = base_url.rstrip("/")
+        self._client = httpx.Client(base_url=self._base_url, timeout=timeout_seconds)
+        self._session_id: str | None = None
+
+    def reset(self, task_id: int, seed: int) -> dict[str, Any]:
+        """Reset an episode on remote API and return initial observation."""
+        response = self._client.post("/reset", json={"task_id": task_id, "seed": seed})
+        response.raise_for_status()
+        obs = response.json()
+        self._session_id = str(obs["session_id"])
+        return obs
+
+    def step(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Execute one step remotely for the active session."""
+        if not self._session_id:
+            raise RuntimeError("Session not initialized. Call reset() first.")
+
+        response = self._client.post(f"/step?session_id={self._session_id}", json=action)
+        response.raise_for_status()
+        return response.json()
+
+    def grade_last_episode(self) -> dict[str, Any] | None:
+        """Return None because grading is local-only unless a grade endpoint exists."""
+        return None
 
 
 def format_obs(obs: dict[str, Any]) -> str:
@@ -276,7 +326,7 @@ def _run_llm_action(
     return _fallback_action(task_id, step_num)
 
 
-def run_episode(env: LocalAPIEnvironment, task_id: int, seed: int, client: OpenAI | None) -> dict[str, Any]:
+def run_episode(env: EnvironmentAdapter, task_id: int, seed: int, client: OpenAI | None) -> dict[str, Any]:
     """Run one complete episode and return logs + aggregate metrics.
 
     Args:
@@ -349,7 +399,12 @@ def main() -> None:
     else:
         log.warning("No API key configured; using deterministic fallback policy instead of model calls.")
 
-    env = LocalAPIEnvironment()
+    if ENV_BASE_URL:
+        env: EnvironmentAdapter = RemoteAPIEnvironment(base_url=ENV_BASE_URL)
+        log.info("Running against remote environment: %s", ENV_BASE_URL)
+    else:
+        env = LocalAPIEnvironment()
+        log.info("Running against local in-process environment")
 
     all_results: list[dict[str, Any]] = []
     scores_by_task: dict[str, float] = {}
@@ -357,17 +412,29 @@ def main() -> None:
     for task_id, seed in zip(TASKS, SEEDS):
         result = run_episode(env=env, task_id=task_id, seed=seed, client=client)
         grade = env.grade_last_episode()
+        if grade is None:
+            grade = {
+                "final_score": None,
+                "breakdown": {},
+                "weights": {},
+                "verdict_action": result.get("final_action"),
+                "ground_truth_type": None,
+                "note": "Remote mode has no grading endpoint; score omitted.",
+            }
 
         result["grade"] = grade
         all_results.append(result)
-        scores_by_task[f"task_{task_id}"] = grade["final_score"]
+        if grade.get("final_score") is not None:
+            scores_by_task[f"task_{task_id}"] = float(grade["final_score"])
 
-        log.info("Task %s score %.4f | breakdown=%s", task_id, grade["final_score"], grade["breakdown"])
+        log.info("Task %s score=%s | breakdown=%s", task_id, grade.get("final_score"), grade.get("breakdown", {}))
 
-    average_score = sum(scores_by_task.values()) / max(len(scores_by_task), 1)
+    average_score = (sum(scores_by_task.values()) / len(scores_by_task)) if scores_by_task else None
     summary = {
         "model": MODEL_NAME if API_KEY else "deterministic-fallback",
-        "average_score": round(average_score, 4),
+        "environment_mode": "remote" if ENV_BASE_URL else "local",
+        "environment_base_url": ENV_BASE_URL or "local-inprocess",
+        "average_score": round(average_score, 4) if average_score is not None else None,
         "scores_by_task": scores_by_task,
         "episodes": all_results,
     }
