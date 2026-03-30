@@ -1,3 +1,13 @@
+---
+title: A/B Test Causal Contamination Forensics
+emoji: 🧪
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # A/B Test Causal Contamination Forensics
 
 Production-grade OpenEnv environment where agents audit experiment validity and detect hidden contamination (SRM, Simpson's paradox, SUTVA interference, spillover, and power failures).
