@@ -47,6 +47,16 @@ class SessionStateResponse(BaseModel):
     cumulative_reward: float
 
 
+class MetadataResponse(BaseModel):
+    """OpenEnv metadata endpoint response payload."""
+
+    name: str
+    description: str
+    version: str
+    mode: str
+    endpoints: Dict[str, str]
+
+
 def _build_mock_data_bundle(task_id: int, seed: int) -> dict[str, Any]:
     """Build a DataGenerator-compatible payload using static fixtures.
 
@@ -247,7 +257,63 @@ def _compute_observation_delta(previous: ExperimentObservation, current: Experim
 def health() -> Dict[str, str]:
     """Health probe endpoint for container/platform checks."""
 
-    return {"status": "ok"}
+    return {"status": "healthy", "legacy_status": "ok"}
+
+
+@router.get("/metadata", response_model=MetadataResponse)
+def metadata() -> MetadataResponse:
+    """Return lightweight environment metadata for OpenEnv runtime validation."""
+
+    return MetadataResponse(
+        name="ab-test-contamination-forensics",
+        description="Environment for auditing A/B test contamination and experiment validity.",
+        version="0.1.0",
+        mode="simulation",
+        endpoints={
+            "reset": "POST /reset",
+            "step": "POST /step",
+            "state": "GET /state",
+            "health": "GET /health",
+            "metadata": "GET /metadata",
+            "schema": "GET /schema",
+            "mcp": "POST /mcp",
+        },
+    )
+
+
+@router.get("/schema")
+def schema() -> Dict[str, Any]:
+    """Expose action/observation/state schemas for OpenEnv runtime validation."""
+
+    return {
+        "action": AuditAction.model_json_schema(),
+        "observation": ExperimentObservation.model_json_schema(),
+        "state": SessionStateResponse.model_json_schema(),
+    }
+
+
+@router.post("/mcp")
+def mcp_rpc(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Minimal JSON-RPC endpoint stub for OpenEnv runtime validation probes."""
+
+    rpc_id = payload.get("id")
+    method = payload.get("method")
+
+    if method == "health":
+        return {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {"status": "healthy"},
+        }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": {
+            "status": "ok",
+            "message": "Minimal MCP stub endpoint",
+        },
+    }
 
 
 @router.post("/reset", response_model=ExperimentObservation)

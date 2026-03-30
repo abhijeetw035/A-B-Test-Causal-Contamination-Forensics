@@ -1,0 +1,2 @@
+# Placeholder lockfile for environments without uv installed.
+# Generate a fully reproducible lock with: uv lock

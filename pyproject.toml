@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ab-test-contamination-forensics"
+version = "0.1.0"
+description = "OpenEnv environment for A/B test causal contamination forensics"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "abhijeetw035" }
+]
+license = { text = "MIT" }
+keywords = ["openenv", "ab-testing", "causal-inference", "fastapi"]
+
+dependencies = [
+  "fastapi==0.111.0",
+  "uvicorn[standard]==0.30.1",
+  "pydantic==2.7.1",
+  "openai==1.30.1",
+  "numpy==1.26.4",
+  "scipy==1.13.0",
+  "httpx==0.27.0",
+  "openenv-core>=0.2.0"
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
