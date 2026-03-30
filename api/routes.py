@@ -3,7 +3,7 @@
 from copy import deepcopy
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
 from env.action_executor import ActionExecutor
@@ -317,10 +317,11 @@ def mcp_rpc(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/reset", response_model=ExperimentObservation)
-def reset(payload: ResetRequest | None = None) -> ExperimentObservation:
+def reset(payload: ResetRequest = Body(default={"task_id": 1, "seed": 42})) -> ExperimentObservation:
     """Reset session using task sampling, synthetic data generation, and state init."""
 
-    payload = payload or ResetRequest()
+    if isinstance(payload, dict):
+        payload = ResetRequest(**payload)
 
     spec = TaskGenerator.sample(task_id=payload.task_id, seed=payload.seed)
 
