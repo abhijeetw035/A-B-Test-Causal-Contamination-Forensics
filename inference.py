@@ -37,6 +37,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 
+def _emit_block(tag: str, **fields: Any) -> None:
+    """Emit a structured stdout line for external evaluation parsers."""
+    field_str = " ".join(f"{key}={fields[key]}" for key in fields)
+    print(f"[{tag}] {field_str}", flush=True)
+
+
 SYSTEM_PROMPT = """
 You are an expert A/B test validity auditor. Given an experiment briefing,
 investigate whether results are statistically valid or contaminated.
@@ -345,6 +351,13 @@ def run_episode(env: EnvironmentAdapter, task_id: int, seed: int, client: OpenAI
     messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     log.info("Starting Task %s Seed %s (%s)", task_id, seed, observation.get("experiment_id"))
+    _emit_block(
+        "START",
+        task=f"task_{task_id}",
+        seed=seed,
+        experiment_id=observation.get("experiment_id", "unknown"),
+        mode=("remote" if ENV_BASE_URL else "local"),
+    )
 
     for step_num in range(MAX_STEPS):
         messages.append({"role": "user", "content": format_obs(observation)})
@@ -365,6 +378,14 @@ def run_episode(env: EnvironmentAdapter, task_id: int, seed: int, client: OpenAI
         observation = step_result["observation"]
         reward = float(step_result["reward"])
         total_reward += reward
+        _emit_block(
+            "STEP",
+            task=f"task_{task_id}",
+            step=(step_num + 1),
+            action=action_payload.get("action_type", "unknown"),
+            reward=round(reward, 4),
+            done=bool(step_result["done"]),
+        )
 
         episode_log.append(
             {
@@ -428,6 +449,13 @@ def main() -> None:
             scores_by_task[f"task_{task_id}"] = float(grade["final_score"])
 
         log.info("Task %s score=%s | breakdown=%s", task_id, grade.get("final_score"), grade.get("breakdown", {}))
+        _emit_block(
+            "END",
+            task=f"task_{task_id}",
+            score=(grade.get("final_score") if grade.get("final_score") is not None else "NA"),
+            steps=result.get("steps_taken", 0),
+            final_action=result.get("final_action", "none"),
+        )
 
     average_score = (sum(scores_by_task.values()) / len(scores_by_task)) if scores_by_task else None
     summary = {
