@@ -29,8 +29,9 @@ from env.state_manager import StateManager
 # Environment configuration — all read from env vars as mandated by spec
 # ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN = os.getenv("HF_TOKEN")                     # no default — injected at runtime
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")     # optional: used with from_docker_image()
 ENV_BASE_URL = (os.getenv("ENV_BASE_URL") or os.getenv("HF_SPACE_URL") or "").rstrip("/")
 
 BENCHMARK = "ab-test-contamination-forensics"
@@ -426,11 +427,11 @@ def run_episode(
 def main() -> None:
     """Run baseline evaluation across task suite (tasks 1–3) and write results JSON."""
     client: OpenAI | None = None
-    if API_KEY:
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    if HF_TOKEN:
+        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
         log.info("Using model %s via %s", MODEL_NAME, API_BASE_URL)
     else:
-        log.warning("No API key configured — using deterministic fallback policy.")
+        log.warning("No HF_TOKEN configured — using deterministic fallback policy.")
 
     if ENV_BASE_URL:
         env: Any = RemoteAPIEnvironment(base_url=ENV_BASE_URL)
