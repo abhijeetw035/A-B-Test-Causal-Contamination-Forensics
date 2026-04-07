@@ -1,4 +1,10 @@
-"""Baseline inference runner for A/B Test Causal Contamination Forensics."""
+"""Baseline inference runner for A/B Test Causal Contamination Forensics.
+
+STDOUT FORMAT (mandatory for evaluation):
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, List, Optional, Protocol
 
 import httpx
 from fastapi.testclient import TestClient
@@ -19,29 +25,63 @@ from models.action import AuditAction
 from env.state_manager import StateManager
 
 
+# ---------------------------------------------------------------------------
+# Environment configuration — all read from env vars as mandated by spec
+# ---------------------------------------------------------------------------
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 ENV_BASE_URL = (os.getenv("ENV_BASE_URL") or os.getenv("HF_SPACE_URL") or "").rstrip("/")
 
+BENCHMARK = "ab-test-contamination-forensics"
 MAX_STEPS = int(os.getenv("MAX_STEPS", "12"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
+
+# Tasks 1-3 are mandatory (easy / medium / hard)
 TASKS = [1, 2, 3]
 SEEDS = [42, 123, 7]
+SUCCESS_SCORE_THRESHOLD = 0.3  # score >= this → success=true
 OUTPUT_FILE = Path("baseline_results.json")
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 
-def _emit_block(tag: str, **fields: Any) -> None:
-    """Emit a structured stdout line for external evaluation parsers."""
-    field_str = " ".join(f"{key}={fields[key]}" for key in fields)
-    print(f"[{tag}] {field_str}", flush=True)
+# ---------------------------------------------------------------------------
+# Mandatory structured stdout logging helpers
+# ---------------------------------------------------------------------------
 
+def log_start(task: str, env: str, model: str) -> None:
+    """Emit a [START] line — exactly one per episode."""
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    """Emit a [STEP] line — once per env.step() call."""
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    # Sanitise action string: remove newlines / leading whitespace
+    action_str = str(action).replace("\n", " ").replace("\r", " ").strip()
+    print(
+        f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """Emit an [END] line — always, even on exception."""
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# System prompt for the LLM auditor
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """
 You are an expert A/B test validity auditor. Given an experiment briefing,
@@ -65,24 +105,18 @@ Respond ONLY with a valid JSON object:
 """.strip()
 
 
+# ---------------------------------------------------------------------------
+# Environment adapters
+# ---------------------------------------------------------------------------
+
 class LocalAPIEnvironment:
     """Simple local environment adapter over FastAPI test client."""
 
     def __init__(self) -> None:
-        """Initialize local API client and active session pointer."""
         self._client = TestClient(app)
         self._session_id: str | None = None
 
     def reset(self, task_id: int, seed: int) -> dict[str, Any]:
-        """Reset an episode and return initial observation.
-
-        Args:
-            task_id: Task identifier.
-            seed: Deterministic seed.
-
-        Returns:
-            Observation dictionary from `/reset`.
-        """
         response = self._client.post("/reset", json={"task_id": task_id, "seed": seed})
         response.raise_for_status()
         obs = response.json()
@@ -90,64 +124,32 @@ class LocalAPIEnvironment:
         return obs
 
     def step(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Execute one step for the current session.
-
-        Args:
-            action: Action payload dictionary.
-
-        Returns:
-            StepResult dictionary from `/step`.
-        """
         if not self._session_id:
             raise RuntimeError("Session not initialized. Call reset() first.")
-
         response = self._client.post(f"/step?session_id={self._session_id}", json=action)
         response.raise_for_status()
         return response.json()
 
     def grade_last_episode(self) -> dict[str, Any]:
-        """Grade the current session using local state and deterministic grader.
-
-        Returns:
-            Grader output dictionary.
-        """
         if not self._session_id:
             raise RuntimeError("Session not initialized. Call reset() first.")
-
         state = StateManager.get(self._session_id)
         if state is None or state.spec is None:
             raise RuntimeError("Unable to locate current session/spec for grading.")
-
         return Grader.grade_episode(state.episode_log, state.spec)
-
-
-class EnvironmentAdapter(Protocol):
-    """Minimal environment adapter contract for local/remote inference."""
-
-    def reset(self, task_id: int, seed: int) -> dict[str, Any]:
-        """Reset the environment and return initial observation."""
-
-    def step(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Execute one action and return a step result payload."""
-
-    def grade_last_episode(self) -> dict[str, Any] | None:
-        """Return grading payload when available, else None."""
 
 
 class RemoteAPIEnvironment:
     """Adapter for a deployed HTTP environment (e.g., HF Space)."""
 
     def __init__(self, base_url: str, timeout_seconds: float = REQUEST_TIMEOUT_SECONDS) -> None:
-        """Initialize remote HTTP client and active session pointer."""
         if not base_url:
             raise ValueError("Remote base URL is required for RemoteAPIEnvironment")
-
         self._base_url = base_url.rstrip("/")
         self._client = httpx.Client(base_url=self._base_url, timeout=timeout_seconds)
         self._session_id: str | None = None
 
     def reset(self, task_id: int, seed: int) -> dict[str, Any]:
-        """Reset an episode on remote API and return initial observation."""
         response = self._client.post("/reset", json={"task_id": task_id, "seed": seed})
         response.raise_for_status()
         obs = response.json()
@@ -155,28 +157,21 @@ class RemoteAPIEnvironment:
         return obs
 
     def step(self, action: dict[str, Any]) -> dict[str, Any]:
-        """Execute one step remotely for the active session."""
         if not self._session_id:
             raise RuntimeError("Session not initialized. Call reset() first.")
-
         response = self._client.post(f"/step?session_id={self._session_id}", json=action)
         response.raise_for_status()
         return response.json()
 
     def grade_last_episode(self) -> dict[str, Any] | None:
-        """Return None because grading is local-only unless a grade endpoint exists."""
         return None
 
 
+# ---------------------------------------------------------------------------
+# Observation formatter
+# ---------------------------------------------------------------------------
+
 def format_obs(obs: dict[str, Any]) -> str:
-    """Convert observation payload into a rich prompt text for model input.
-
-    Args:
-        obs: Observation dictionary returned by environment.
-
-    Returns:
-        Structured text prompt with revealed data included.
-    """
     lines = [
         f"=== EXPERIMENT AUDIT: {obs.get('experiment_id', 'UNKNOWN')} ===",
         f"Primary metric: {obs.get('primary_metric', '')}",
@@ -207,7 +202,6 @@ def format_obs(obs: dict[str, Any]) -> str:
         "network_exposure_map",
         "randomization_audit",
     ]
-
     for field in reveal_fields:
         if obs.get(field) is not None:
             lines.append(f"\n[REVEALED] {field.upper()}:")
@@ -216,16 +210,11 @@ def format_obs(obs: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Deterministic fallback policy (used when no API key is set)
+# ---------------------------------------------------------------------------
+
 def _fallback_action(task_id: int, step_num: int) -> dict[str, Any]:
-    """Deterministic fallback policy when model calls are unavailable.
-
-    Args:
-        task_id: Current task id.
-        step_num: Zero-based step number.
-
-    Returns:
-        Valid `AuditAction` dictionary.
-    """
     plans: dict[int, list[tuple[str, dict[str, Any]]]] = {
         1: [
             ("run_srm_check", {}),
@@ -261,15 +250,17 @@ def _fallback_action(task_id: int, step_num: int) -> dict[str, Any]:
                 "flag_contamination",
                 {
                     "contamination_type": "sutva_violation",
-                    "evidence_facts": ["high overlap with concurrent pricing experiment", "network spillover in control"],
+                    "evidence_facts": [
+                        "high overlap with concurrent pricing experiment",
+                        "network spillover in control",
+                    ],
                     "recommended_action": "rerun",
                     "estimated_true_effect": 0.012,
                 },
             ),
         ],
     }
-
-    default_plan = [
+    default_plan: list[tuple[str, dict[str, Any]]] = [
         (
             "request_rerun",
             {"reason": "Unknown task", "recommended_changes": ["reconfigure task id"]},
@@ -277,13 +268,6 @@ def _fallback_action(task_id: int, step_num: int) -> dict[str, Any]:
     ]
     plan = plans.get(task_id, default_plan)
     action_type, parameters = plan[min(step_num, len(plan) - 1)]
-
-    if action_type == "request_rerun" and not parameters:
-        parameters = {
-            "reason": "Unable to determine reliable verdict",
-            "recommended_changes": ["collect more diagnostics"],
-        }
-
     return {
         "action_type": action_type,
         "parameters": parameters,
@@ -292,23 +276,16 @@ def _fallback_action(task_id: int, step_num: int) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# LLM call with fallback
+# ---------------------------------------------------------------------------
+
 def _run_llm_action(
     client: OpenAI | None,
     messages: list[dict[str, str]],
     task_id: int,
     step_num: int,
 ) -> dict[str, Any]:
-    """Generate next action using LLM with resilient fallback behavior.
-
-    Args:
-        client: OpenAI client or None.
-        messages: Conversation messages.
-        task_id: Current task id.
-        step_num: Zero-based step number.
-
-    Returns:
-        Action dictionary expected by API.
-    """
     if client is None:
         return _fallback_action(task_id, step_num)
 
@@ -325,150 +302,159 @@ def _run_llm_action(
             payload = json.loads(content)
             parsed = AuditAction(**payload)
             return parsed.model_dump()
-        except Exception as exc:  # noqa: BLE001 - inference should degrade gracefully
+        except Exception as exc:  # noqa: BLE001
             log.warning("LLM attempt %s failed: %s", attempt + 1, exc)
             time.sleep(2**attempt)
 
     return _fallback_action(task_id, step_num)
 
 
-def run_episode(env: EnvironmentAdapter, task_id: int, seed: int, client: OpenAI | None) -> dict[str, Any]:
-    """Run one complete episode and return logs + aggregate metrics.
+# ---------------------------------------------------------------------------
+# Episode runner — emits compliant [START] / [STEP] / [END] blocks
+# ---------------------------------------------------------------------------
 
-    Args:
-        env: Local API environment adapter.
-        task_id: Task identifier.
-        seed: Deterministic seed.
-        client: Optional OpenAI client.
+def run_episode(
+    env: Any,
+    task_id: int,
+    seed: int,
+    client: OpenAI | None,
+) -> dict[str, Any]:
+    """Run one complete episode for a single task and emit structured stdout lines.
 
     Returns:
-        Episode summary dictionary with rewards and action trace.
+        Episode summary dict with rewards and final score.
     """
-    observation = env.reset(task_id=task_id, seed=seed)
-    episode_log: list[dict[str, Any]] = []
-    total_reward = 0.0
+    task_name = f"task_{task_id}"
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # ── [START] ─────────────────────────────────────────────────────────────
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
-    log.info("Starting Task %s Seed %s (%s)", task_id, seed, observation.get("experiment_id"))
-    _emit_block(
-        "START",
-        task=f"task_{task_id}",
-        seed=seed,
-        experiment_id=observation.get("experiment_id", "unknown"),
-        mode=("remote" if ENV_BASE_URL else "local"),
-    )
+    try:
+        observation = env.reset(task_id=task_id, seed=seed)
+        messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    for step_num in range(MAX_STEPS):
-        messages.append({"role": "user", "content": format_obs(observation)})
-        action_payload = _run_llm_action(client=client, messages=messages, task_id=task_id, step_num=step_num)
+        episode_log: list[dict[str, Any]] = []
 
-        # Ensure payload is always valid per model constraints.
-        try:
-            action_payload = AuditAction(**action_payload).model_dump()
-        except Exception:
-            action_payload = AuditAction(
-                action_type="request_rerun",
-                parameters={"reason": "Malformed action", "recommended_changes": ["fix action formatting"]},
-                reasoning="Malformed action recovered with safe fallback.",
-                confidence=0.2,
-            ).model_dump()
+        for step_num in range(MAX_STEPS):
+            # Build LLM message
+            messages.append({"role": "user", "content": format_obs(observation)})
+            action_payload = _run_llm_action(
+                client=client, messages=messages, task_id=task_id, step_num=step_num
+            )
 
-        step_result = env.step(action_payload)
-        observation = step_result["observation"]
-        reward = float(step_result["reward"])
-        total_reward += reward
-        _emit_block(
-            "STEP",
-            task=f"task_{task_id}",
-            step=(step_num + 1),
-            action=action_payload.get("action_type", "unknown"),
-            reward=round(reward, 4),
-            done=bool(step_result["done"]),
-        )
+            # Validate / sanitize action
+            try:
+                action_payload = AuditAction(**action_payload).model_dump()
+            except Exception:
+                action_payload = AuditAction(
+                    action_type="request_rerun",
+                    parameters={"reason": "Malformed action", "recommended_changes": ["fix action formatting"]},
+                    reasoning="Malformed action recovered with safe fallback.",
+                    confidence=0.2,
+                ).model_dump()
 
-        episode_log.append(
-            {
-                "step": step_num + 1,
-                "action": action_payload,
-                "reward": reward,
-                "done": bool(step_result["done"]),
-                "info": step_result.get("info", {}),
-            }
-        )
+            step_result = env.step(action_payload)
+            observation = step_result["observation"]
+            reward = float(step_result.get("reward", 0.0))
+            done = bool(step_result.get("done", False))
+            error_str: Optional[str] = step_result.get("info", {}).get("error") or None
 
-        messages.append({"role": "assistant", "content": json.dumps(action_payload)})
+            rewards.append(reward)
+            steps_taken = step_num + 1
 
-        if step_result["done"]:
-            break
+            # ── [STEP] ───────────────────────────────────────────────────────
+            log_step(
+                step=steps_taken,
+                action=action_payload.get("action_type", "unknown"),
+                reward=reward,
+                done=done,
+                error=error_str,
+            )
+
+            episode_log.append(
+                {
+                    "step": steps_taken,
+                    "action": action_payload,
+                    "reward": reward,
+                    "done": done,
+                    "info": step_result.get("info", {}),
+                }
+            )
+            messages.append({"role": "assistant", "content": json.dumps(action_payload)})
+
+            if done:
+                break
+
+        # Grade the episode
+        grade = env.grade_last_episode() if hasattr(env, "grade_last_episode") else None
+        if grade is None:
+            # Remote mode: estimate score from cumulative reward
+            total_reward = sum(rewards)
+            score = min(max(total_reward, 0.0), 1.0)
+        else:
+            raw_score = grade.get("final_score")
+            score = float(raw_score) if raw_score is not None else 0.0
+            score = min(max(score, 0.0), 1.0)
+
+        success = score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as exc:
+        log.error("Episode error for task %s: %s", task_id, exc)
+        # Still emit [END] below in the finally-equivalent
+
+    # ── [END] ────────────────────────────────────────────────────────────────
+    log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
     return {
         "task_id": task_id,
         "seed": seed,
-        "total_reward": round(total_reward, 4),
-        "steps_taken": len(episode_log),
-        "episode_log": episode_log,
-        "final_action": episode_log[-1]["action"]["action_type"] if episode_log else None,
+        "score": round(score, 4),
+        "success": success,
+        "steps_taken": steps_taken,
+        "rewards": rewards,
     }
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    """Run baseline evaluation across task suite and write results JSON."""
+    """Run baseline evaluation across task suite (tasks 1–3) and write results JSON."""
     client: OpenAI | None = None
     if API_KEY:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        log.info("Using model %s via %s", MODEL_NAME, API_BASE_URL)
     else:
-        log.warning("No API key configured; using deterministic fallback policy instead of model calls.")
+        log.warning("No API key configured — using deterministic fallback policy.")
 
     if ENV_BASE_URL:
-        env: EnvironmentAdapter = RemoteAPIEnvironment(base_url=ENV_BASE_URL)
-        log.info("Running against remote environment: %s", ENV_BASE_URL)
+        env: Any = RemoteAPIEnvironment(base_url=ENV_BASE_URL)
+        log.info("Targeting remote environment: %s", ENV_BASE_URL)
     else:
         env = LocalAPIEnvironment()
-        log.info("Running against local in-process environment")
+        log.info("Running against local in-process environment.")
 
     all_results: list[dict[str, Any]] = []
-    scores_by_task: dict[str, float] = {}
 
     for task_id, seed in zip(TASKS, SEEDS):
         result = run_episode(env=env, task_id=task_id, seed=seed, client=client)
-        grade = env.grade_last_episode()
-        if grade is None:
-            grade = {
-                "final_score": None,
-                "breakdown": {},
-                "weights": {},
-                "verdict_action": result.get("final_action"),
-                "ground_truth_type": None,
-                "note": "Remote mode has no grading endpoint; score omitted.",
-            }
-
-        result["grade"] = grade
         all_results.append(result)
-        if grade.get("final_score") is not None:
-            scores_by_task[f"task_{task_id}"] = float(grade["final_score"])
 
-        log.info("Task %s score=%s | breakdown=%s", task_id, grade.get("final_score"), grade.get("breakdown", {}))
-        _emit_block(
-            "END",
-            task=f"task_{task_id}",
-            score=(grade.get("final_score") if grade.get("final_score") is not None else "NA"),
-            steps=result.get("steps_taken", 0),
-            final_action=result.get("final_action", "none"),
-        )
-
-    average_score = (sum(scores_by_task.values()) / len(scores_by_task)) if scores_by_task else None
+    scores = [r["score"] for r in all_results]
+    average_score = round(sum(scores) / len(scores), 4) if scores else 0.0
     summary = {
         "model": MODEL_NAME if API_KEY else "deterministic-fallback",
         "environment_mode": "remote" if ENV_BASE_URL else "local",
-        "environment_base_url": ENV_BASE_URL or "local-inprocess",
-        "average_score": round(average_score, 4) if average_score is not None else None,
-        "scores_by_task": scores_by_task,
-        "episodes": all_results,
+        "average_score": average_score,
+        "task_results": all_results,
     }
-
     OUTPUT_FILE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    log.info("Saved baseline results to %s", OUTPUT_FILE)
+    log.info("Saved baseline results to %s | avg_score=%.4f", OUTPUT_FILE, average_score)
 
 
 if __name__ == "__main__":
