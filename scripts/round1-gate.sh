@@ -52,8 +52,8 @@ if missing:
 
 for task, score in scores_by_task.items():
     value = float(score)
-    if not (0.0 <= value <= 1.0):
-        raise SystemExit(f"FAIL: score for {task} out of [0,1]: {value}")
+  if not (0.0 < value < 1.0):
+    raise SystemExit(f"FAIL: score for {task} must be strictly between 0 and 1: {value}")
 
 print("PASS: baseline_results.json task scores are present and bounded [0,1]")
 PY

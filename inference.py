@@ -44,6 +44,8 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 TASKS = [1, 2, 3, 4, 5]
 SEEDS = [42, 123, 7, 88, 99]
 SUCCESS_SCORE_THRESHOLD = 0.3  # score >= this → success=true
+STRICT_SCORE_MIN = 0.01
+STRICT_SCORE_MAX = 0.99
 OUTPUT_FILE = Path("baseline_results.json")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -78,6 +80,15 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
         f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
         flush=True,
     )
+
+
+def _to_strict_task_score(value: float | int | None) -> float:
+    """Map any numeric score into strict open interval (0,1)."""
+    try:
+        candidate = float(value if value is not None else STRICT_SCORE_MIN)
+    except (TypeError, ValueError):
+        candidate = STRICT_SCORE_MIN
+    return min(max(candidate, STRICT_SCORE_MIN), STRICT_SCORE_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +367,7 @@ def run_episode(
     task_name = f"task_{task_id}"
     rewards: List[float] = []
     steps_taken = 0
-    score = 0.0
+    score = STRICT_SCORE_MIN
     success = False
 
     # ── [START] ─────────────────────────────────────────────────────────────
@@ -423,11 +434,10 @@ def run_episode(
         if grade is None:
             # Remote mode: estimate score from cumulative reward
             total_reward = sum(rewards)
-            score = min(max(total_reward, 0.0), 1.0)
+            score = _to_strict_task_score(total_reward)
         else:
             raw_score = grade.get("final_score")
-            score = float(raw_score) if raw_score is not None else 0.0
-            score = min(max(score, 0.0), 1.0)
+            score = _to_strict_task_score(raw_score)
 
         success = score >= SUCCESS_SCORE_THRESHOLD
 

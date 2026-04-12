@@ -95,9 +95,9 @@ def main() -> int:
 
     deterministic = all(len(set(values)) == 1 for values in task_series.values()) if task_series else False
     out_of_range = {
-        task: [v for v in values if not (0.0 <= v <= 1.0)]
+        task: [v for v in values if not (0.0 < v < 1.0)]
         for task, values in task_series.items()
-        if any(not (0.0 <= v <= 1.0) for v in values)
+        if any(not (0.0 < v < 1.0) for v in values)
     }
 
     report = {

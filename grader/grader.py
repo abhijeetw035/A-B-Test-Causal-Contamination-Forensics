@@ -19,6 +19,8 @@ TYPE_MATCH_MATRIX: dict[tuple[str, str], float] = {
 }
 
 TERMINAL_ACTIONS: set[str] = {"flag_contamination", "approve_result", "request_rerun"}
+STRICT_SCORE_MIN = 0.01
+STRICT_SCORE_MAX = 0.99
 
 RELEVANT_QUERY_MAP: dict[str, set[str]] = {
     "clean": {"run_srm_check", "query_temporal", "query_assignment_overlap"},
@@ -35,6 +37,14 @@ RELEVANT_QUERY_MAP: dict[str, set[str]] = {
 def _clamp(value: float, low: float, high: float) -> float:
     """Clamp numeric value to an inclusive range."""
     return max(low, min(high, value))
+
+
+def _clamp_task_score_open_unit_interval(value: float) -> float:
+    """Clamp final task score to strict open interval (0,1).
+
+    The benchmark validator rejects exact boundary values 0.0 and 1.0.
+    """
+    return _clamp(value, STRICT_SCORE_MIN, STRICT_SCORE_MAX)
 
 
 def _extract_actions(episode_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -242,7 +252,7 @@ class Grader:
         }
 
         final_score = sum(breakdown[k] * weights[k] for k in weights)
-        final_score = _clamp(final_score, 0.0, 1.0)
+        final_score = _clamp_task_score_open_unit_interval(final_score)
 
         return {
             "final_score": round(final_score, 4),
