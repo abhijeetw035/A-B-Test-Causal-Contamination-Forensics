@@ -95,6 +95,8 @@ class ExperimentObservation(BaseModel):
     available_queries: List[str]
     steps_taken: int
     steps_remaining: int
+    investigation_budget: float
+    budget_spent: float
 
     subgroup_results: Optional[Dict[str, List[SubgroupResult]]] = None
     temporal_breakdown: Optional[List[DailyResult]] = None
@@ -105,3 +107,5 @@ class ExperimentObservation(BaseModel):
     mde_analysis: Optional[MDEAnalysis] = None
     randomization_audit: Optional[Dict[str, Any]] = None
     peer_experiment_list: Optional[List[Dict[str, Any]]] = None
+    expert_review: Optional[Dict[str, Any]] = None
+    counterfactual_analysis: Optional[Dict[str, Any]] = None

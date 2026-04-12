@@ -23,7 +23,7 @@ router = APIRouter()
 class ResetRequest(BaseModel):
     """Request body for reset endpoint."""
 
-    task_id: int = Field(default=1, ge=1, le=4)
+    task_id: int = Field(default=1, ge=1, le=5)
     seed: int = Field(default=42)
 
 
@@ -214,6 +214,15 @@ def _build_mock_data_bundle(task_id: int, seed: int) -> dict[str, Any]:
                 "owner": "monetization_team",
             }
         ],
+        "simulate_counterfactual": {
+            "unconfounded_ate_estimate": aggregate["absolute_lift"] - 0.005,
+            "confounding_robustness_value": 0.81,
+            "methodology": "Double Machine Learning (Causal Forest)",
+        },
+        "request_expert_review": {
+            "hint": "The Staff Data Scientist says: 'Look closely at the randomization constraints and network interference. SUTVA might be violated.'",
+            "expert": "Dr. Sarah",
+        },
     }
 
     return {
@@ -429,6 +438,12 @@ def step(action: AuditAction, session_id: str) -> StepResult:
     if execution.is_terminal:
         state.episode_done = True
         state.termination_reason = "agent_verdict"
+
+    state.budget_used += execution.cost
+
+    if state.budget_used >= state.budget and not execution.is_terminal:
+        state.episode_done = True
+        state.termination_reason = "budget_exhausted"
 
     reward = reward_result.step_reward
     state.cumulative_reward += reward

@@ -15,9 +15,16 @@ Production-grade OpenEnv environment where agents audit experiment validity and 
 ## What this project does
 
 - Exposes an environment API with progressive disclosure (`/reset`, `/step`, `/state`, `/health`)
-- Generates deterministic synthetic experiment scenarios across 4 tasks
+- Generates deterministic synthetic experiment scenarios across 5 complex tasks
 - Scores agent behavior with a deterministic grader (no LLM-as-judge)
 - Includes a baseline `inference.py` runner for local and deployed environments
+
+## 🌟 Standout Features for Round 1
+We've gone beyond standard JSON-parsing environments to introduce realistic ML engineering mechanics:
+1. **Financial Investigation Budget constraint**: Actions are no longer equally weighted. Pulling a temporal summary is cheap ($100), but joining cross-platform assignments ($1000) or parsing randomization logs ($1500) drains your budget. If the agent runs out of funding before terminating, the episode terminates as `budget_exhausted`!
+2. **Staff AI Collaboration ('Human' in the Loop)**: Agents can invoke `request_expert_review` to spend significant budget for a natural language hint from a simulated Staff Data Scientist.
+3. **Advanced Causal Inference capability**: A heavy-duty `simulate_counterfactual` action mimics running computationally expensive Double ML pipelines to get unconfounded baseline ATE estimates.
+4. **"Expert" Task Varieties**: Agents must navigate Network Spillover, Multiple Testing pitfalls, and Novelty Effect degradation scenarios.
 
 ## Repository structure
 
@@ -44,6 +51,8 @@ Investigative actions:
 - `inspect_randomization`
 - `query_secondary_metrics`
 - `compute_mde`
+- `simulate_counterfactual` (Cost: $2500)
+- `request_expert_review` (Cost: $3000)
 
 Terminal actions:
 
@@ -117,6 +126,45 @@ python inference.py
 ```
 
 Results are written to `baseline_results.json`.
+
+### Structured stdout contract
+
+`inference.py` emits evaluator-required logs:
+
+- `[START] task=<task_name> env=<benchmark> model=<model_name>`
+- `[STEP] step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>`
+- `[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...>`
+
+Validate log format after any change:
+
+```bash
+python inference.py > /tmp/inference.log
+python scripts/check_inference_stdout.py /tmp/inference.log
+```
+
+### Round-1 gate (one command)
+
+Run the full pre-submission gate (env vars, Space ping/reset, Docker build, OpenEnv validate, inference run, stdout contract, artifact checks):
+
+```bash
+./scripts/round1-gate.sh https://abhijeetw035-ab-test-contamination-env.hf.space .
+```
+
+Outputs:
+
+- `/tmp/inference_round1.log`
+- `baseline_results.json`
+- `artifacts/determinism_report.json`
+
+### Determinism evidence artifact
+
+Generate repeat-run evidence for submission:
+
+```bash
+python scripts/generate_determinism_report.py --runs 3 --output artifacts/determinism_report.json
+```
+
+By default, this forces deterministic fallback mode (no model token) so repeated runs are directly comparable.
 
 ## OpenEnv compliance
 

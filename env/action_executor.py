@@ -19,6 +19,8 @@ INVESTIGATIVE_ACTIONS: tuple[str, ...] = (
     "inspect_randomization",
     "query_secondary_metrics",
     "compute_mde",
+    "simulate_counterfactual",
+    "request_expert_review",
 )
 
 TERMINAL_ACTIONS: tuple[str, ...] = (
@@ -35,6 +37,22 @@ ALLOWED_SUBGROUP_DIMENSIONS: tuple[str, ...] = (
     "platform_version",
 )
 
+ACTION_COSTS: dict[str, float] = {
+    "run_srm_check": 50.0,
+    "query_temporal": 100.0,
+    "compute_mde": 50.0,
+    "query_subgroup": 300.0,
+    "query_secondary_metrics": 400.0,
+    "query_assignment_overlap": 1000.0,
+    "check_network_exposure": 2000.0,
+    "inspect_randomization": 1500.0,
+    "simulate_counterfactual": 2500.0,
+    "request_expert_review": 3000.0,
+    "flag_contamination": 0.0,
+    "approve_result": 0.0,
+    "request_rerun": 0.0,
+}
+
 
 @dataclass(slots=True)
 class ActionExecutionResult:
@@ -47,6 +65,7 @@ class ActionExecutionResult:
     revealed_key: str | None
     revealed_value: Any
     reward_delta: float
+    cost: float
 
 
 class ActionExecutor:
@@ -72,6 +91,20 @@ class ActionExecutor:
                 revealed_key=None,
                 revealed_value=None,
                 reward_delta=0.0,
+                cost=0.0,
+            )
+
+        cost = ACTION_COSTS.get(action.action_type, 0.0)
+        if state.budget_used + cost > state.budget:
+            return ActionExecutionResult(
+                accepted=False,
+                is_duplicate=False,
+                is_terminal=False,
+                error=f"Budget exhausted. Required: ${cost}, Available: ${state.budget - state.budget_used}",
+                revealed_key=None,
+                revealed_value=None,
+                reward_delta=0.0,
+                cost=0.0,
             )
 
         if state.step_count >= state.max_steps:
@@ -83,6 +116,7 @@ class ActionExecutor:
                 revealed_key=None,
                 revealed_value=None,
                 reward_delta=0.0,
+                cost=0.0,
             )
 
         if action.action_type in INVESTIGATIVE_ACTIONS and action.action_type in state.executed_queries:
@@ -94,6 +128,7 @@ class ActionExecutor:
                 revealed_key=action.action_type,
                 revealed_value=state.revealed_data.get(action.action_type),
                 reward_delta=-0.03,
+                cost=0.0,
             )
 
         validation_error = ActionExecutor._validate_action_parameters(action)
@@ -106,6 +141,7 @@ class ActionExecutor:
                 revealed_key=None,
                 revealed_value=None,
                 reward_delta=0.0,
+                cost=0.0,
             )
 
         if action.action_type in TERMINAL_ACTIONS:
@@ -117,6 +153,7 @@ class ActionExecutor:
                 revealed_key=None,
                 revealed_value=None,
                 reward_delta=0.0,
+                cost=cost,
             )
 
         query_payloads = state.data.get("query_payloads", {})
@@ -131,6 +168,7 @@ class ActionExecutor:
                 revealed_key="query_subgroup",
                 revealed_value={dimension: subgroup_map.get(dimension, [])},
                 reward_delta=-0.01,
+                cost=cost,
             )
 
         payload = query_payloads.get(action.action_type)
@@ -143,6 +181,7 @@ class ActionExecutor:
                 revealed_key=None,
                 revealed_value=None,
                 reward_delta=0.0,
+                cost=0.0,
             )
 
         return ActionExecutionResult(
@@ -153,6 +192,7 @@ class ActionExecutor:
             revealed_key=action.action_type,
             revealed_value=payload,
             reward_delta=-0.01,
+            cost=cost,
         )
 
     @staticmethod

@@ -1,0 +1,49 @@
+{
+  "generated_at_utc": "2026-04-12T08:48:35.344491+00:00",
+  "runs": 3,
+  "mode": "forced_fallback",
+  "deterministic": true,
+  "tasks_checked": [
+    "task_1",
+    "task_2",
+    "task_3",
+    "task_4",
+    "task_5"
+  ],
+  "out_of_range_scores": {},
+  "run_records": [
+    {
+      "run": 1,
+      "runtime_seconds": 0.866,
+      "scores_by_task": {
+        "task_1": 0.864,
+        "task_2": 0.84,
+        "task_3": 0.84,
+        "task_4": 0.5322,
+        "task_5": 0.74
+      }
+    },
+    {
+      "run": 2,
+      "runtime_seconds": 0.824,
+      "scores_by_task": {
+        "task_1": 0.864,
+        "task_2": 0.84,
+        "task_3": 0.84,
+        "task_4": 0.5322,
+        "task_5": 0.74
+      }
+    },
+    {
+      "run": 3,
+      "runtime_seconds": 0.844,
+      "scores_by_task": {
+        "task_1": 0.864,
+        "task_2": 0.84,
+        "task_3": 0.84,
+        "task_4": 0.5322,
+        "task_5": 0.74
+      }
+    }
+  ]
+}

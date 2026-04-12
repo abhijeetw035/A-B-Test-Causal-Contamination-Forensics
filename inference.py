@@ -41,8 +41,8 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "500"))
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 
 # Tasks 1-3 are mandatory (easy / medium / hard)
-TASKS = [1, 2, 3]
-SEEDS = [42, 123, 7]
+TASKS = [1, 2, 3, 4, 5]
+SEEDS = [42, 123, 7, 88, 99]
 SUCCESS_SCORE_THRESHOLD = 0.3  # score >= this → success=true
 OUTPUT_FILE = Path("baseline_results.json")
 
@@ -190,6 +190,8 @@ def format_obs(obs: dict[str, Any]) -> str:
         "",
         f"Steps taken: {obs.get('steps_taken', '?')}",
         f"Steps remaining: {obs.get('steps_remaining', '?')}",
+        f"Investigation budget: ${obs.get('investigation_budget', 0):.2f}",
+        f"Budget spent: ${obs.get('budget_spent', 0):.2f}",
         f"Available actions: {', '.join(obs.get('available_queries', []))}",
     ]
 
@@ -202,6 +204,8 @@ def format_obs(obs: dict[str, Any]) -> str:
         "mde_analysis",
         "network_exposure_map",
         "randomization_audit",
+        "expert_review",
+        "counterfactual_analysis",
     ]
     for field in reveal_fields:
         if obs.get(field) is not None:
@@ -257,6 +261,30 @@ def _fallback_action(task_id: int, step_num: int) -> dict[str, Any]:
                     ],
                     "recommended_action": "rerun",
                     "estimated_true_effect": 0.012,
+                },
+            ),
+        ],
+        4: [
+            ("query_temporal", {}),
+            ("run_srm_check", {}),
+            (
+                "approve_result",
+                {
+                    "recommended_action": "launch",
+                },
+            ),
+        ],
+        5: [
+            ("query_temporal", {}),
+            ("request_expert_review", {}),
+            ("simulate_counterfactual", {}),
+            (
+                "flag_contamination",
+                {
+                    "contamination_type": "novelty_effect",
+                    "evidence_facts": ["temporal_decay_observed"],
+                    "recommended_action": "rerun",
+                    "estimated_true_effect": 0.0,
                 },
             ),
         ],
@@ -448,10 +476,18 @@ def main() -> None:
 
     scores = [r["score"] for r in all_results]
     average_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+    scores_by_task = {f"task_{r['task_id']}": r["score"] for r in all_results}
+    success_rate = round(
+        sum(1 for r in all_results if r.get("success")) / len(all_results), 4
+    ) if all_results else 0.0
     summary = {
-        "model": MODEL_NAME if API_KEY else "deterministic-fallback",
+        "model": MODEL_NAME if HF_TOKEN else "deterministic-fallback",
         "environment_mode": "remote" if ENV_BASE_URL else "local",
+        "benchmark": BENCHMARK,
+        "scores_by_task": scores_by_task,
         "average_score": average_score,
+        "success_rate": success_rate,
+        "task_count": len(all_results),
         "task_results": all_results,
     }
     OUTPUT_FILE.write_text(json.dumps(summary, indent=2), encoding="utf-8")

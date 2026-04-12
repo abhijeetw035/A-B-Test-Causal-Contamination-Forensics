@@ -521,6 +521,33 @@ class DataGenerator:
             contamination_type=spec.contamination_type,
         )
 
+        simulate_counterfactual = {
+            "unconfounded_ate_estimate": round(spec.true_effect_size, 6),
+            "confounding_robustness_value": round(float(rng.uniform(0.75, 0.95)), 4),
+            "methodology": "Double Machine Learning (Causal Forest)",
+        }
+
+        expert_hint = "No obvious issues detected by the expert. Looks mostly clean."
+        if spec.contamination_type == "srm":
+            expert_hint = "Have you looked at the sample sizes? Sometimes the hashing bucket is skewed."
+        elif spec.contamination_type == "simpsons_paradox":
+            expert_hint = "I've seen something like this before. Try breaking it down by cohort or device type. Aggregates hide things."
+        elif spec.contamination_type == "sutva_violation":
+            expert_hint = "Wait, are there other experiments running at the same time? Or maybe users are interacting with each other?"
+        elif spec.contamination_type == "novelty_effect":
+            expert_hint = "Users always click more on new features on day 1. Check the daily time-series breakdown."
+        elif spec.contamination_type == "network_spillover":
+            expert_hint = "If control users interact with treatment users, the control mean gets contaminated."
+        elif spec.contamination_type == "underpowered_overclaim":
+            expert_hint = "Are we sure we have enough data to detect an effect this small? Might want to run an MDE check."
+        elif spec.contamination_type == "multiple_testing":
+            expert_hint = "If you look at 50 secondary metrics, one of them will be significant by chance. Check guardrails."
+
+        request_expert_review = {
+            "hint": f"The Principal Data Scientist says: '{expert_hint}'",
+            "expert": "Dr. Sarah",
+        }
+
         return {
             "experiment_id": experiment_id,
             "primary_metric": primary_metric,
@@ -544,5 +571,7 @@ class DataGenerator:
                 "query_secondary_metrics": secondary_metrics,
                 "compute_mde": mde_analysis,
                 "peer_experiment_list": peer_experiment_list,
+                "simulate_counterfactual": simulate_counterfactual,
+                "request_expert_review": request_expert_review,
             },
         }

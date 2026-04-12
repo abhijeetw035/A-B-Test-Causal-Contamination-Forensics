@@ -1,0 +1,53 @@
+name: round1-quality-gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install openenv-core
+
+      - name: Run tests
+        run: pytest -q tests/
+
+      - name: Validate OpenEnv metadata
+        run: openenv validate .
+
+      - name: Docker build check
+        run: docker build .
+
+      - name: Inference smoke run + stdout contract
+        run: |
+          python inference.py > /tmp/inference_ci.log
+          python scripts/check_inference_stdout.py /tmp/inference_ci.log
+
+      - name: Determinism artifact
+        run: python scripts/generate_determinism_report.py --runs 3 --output artifacts/determinism_report.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: round1-artifacts
+          path: |
+            /tmp/inference_ci.log
+            baseline_results.json
+            artifacts/determinism_report.json

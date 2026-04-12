@@ -30,6 +30,8 @@ class ObservationBuilder:
             available_queries=data["available_queries"],
             steps_taken=state.step_count,
             steps_remaining=max(state.max_steps - state.step_count, 0),
+            investigation_budget=state.budget,
+            budget_spent=state.budget_used,
         )
 
     @staticmethod
@@ -69,6 +71,14 @@ class ObservationBuilder:
         if "inspect_randomization" in state.revealed_data:
             observation["randomization_audit"] = state.revealed_data["inspect_randomization"]
 
+        if "simulate_counterfactual" in state.revealed_data:
+            observation["counterfactual_analysis"] = state.revealed_data["simulate_counterfactual"]
+
+        if "request_expert_review" in state.revealed_data:
+            observation["expert_review"] = state.revealed_data["request_expert_review"]
+
         observation["steps_taken"] = state.step_count
         observation["steps_remaining"] = max(state.max_steps - state.step_count, 0)
+        observation["investigation_budget"] = state.budget
+        observation["budget_spent"] = state.budget_used
         return ExperimentObservation(**observation)

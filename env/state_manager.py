@@ -48,6 +48,8 @@ class EpisodeState:
     cumulative_reward: float = 0.0
     spec: ContaminationSpec | None = None
     data: dict[str, Any] = field(default_factory=dict)
+    budget: float = 10000.0
+    budget_used: float = 0.0
 
 
 class StateManager:
@@ -88,6 +90,8 @@ class StateManager:
             max_steps=max_steps,
             spec=spec,
             data=data,
+            budget=10000.0,
+            budget_used=0.0,
         )
         cls._sessions[session_id] = state
         cls.log_event(
@@ -193,6 +197,8 @@ class StateManager:
             "executed_queries": list(state.executed_queries),
             "episode_done": state.episode_done,
             "cumulative_reward": round(state.cumulative_reward, 4),
+            "investigation_budget": state.budget,
+            "budget_spent": round(state.budget_used, 2),
         }
 
     @classmethod

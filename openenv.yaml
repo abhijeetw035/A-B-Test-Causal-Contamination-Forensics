@@ -21,7 +21,7 @@ observation_space:
 action_space:
   type: discrete_structured
   schema: AuditAction
-  n_actions: 11
+  n_actions: 13
   terminal_actions:
     - flag_contamination
     - approve_result
@@ -50,6 +50,10 @@ tasks:
     name: clean_with_red_herrings
     difficulty: expert
     description: Correctly approve a valid experiment despite misleading signals.
+  - id: 5
+    name: novelty_effect_decay
+    difficulty: expert
+    description: Detect temporal decay from novelty effect while balancing budget.
 
 episode:
   max_steps: 15
@@ -69,4 +73,4 @@ inference:
     - HF_TOKEN
   runtime_limit_minutes: 20
   reproducible: true
-  seeds: [42, 123, 7]
+  seeds: [42, 123, 7, 88, 99]

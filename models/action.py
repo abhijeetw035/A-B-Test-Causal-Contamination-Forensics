@@ -17,6 +17,8 @@ class AuditAction(BaseModel):
         "inspect_randomization",
         "query_secondary_metrics",
         "compute_mde",
+        "simulate_counterfactual",
+        "request_expert_review",
         "flag_contamination",
         "approve_result",
         "request_rerun",

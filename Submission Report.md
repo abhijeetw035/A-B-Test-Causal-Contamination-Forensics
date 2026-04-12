@@ -9,6 +9,42 @@
 
 ---
 
+## 🚀 Round 1 Standout Upgrades (2026-04-12)
+
+To maximize evaluator confidence and reduce failure risk, the project now includes a strict, automated quality gate stack:
+
+1. **Strict stdout contract validator**
+  - Added: `scripts/check_inference_stdout.py`
+  - Verifies exact `[START]` → `[STEP]` → `[END]` sequence and format invariants.
+  - Fails fast on ordering/format mismatch before submission.
+
+2. **One-command pre-submission gate**
+  - Added: `scripts/round1-gate.sh`
+  - Runs required env var checks, Space ping/reset check, Docker build, OpenEnv validation, inference execution, stdout contract validation, score-range checks, and determinism artifact generation.
+
+3. **Determinism evidence artifact generator**
+  - Added: `scripts/generate_determinism_report.py`
+  - Produces `artifacts/determinism_report.json` from repeated inference runs.
+  - Records task-level score consistency and out-of-range checks.
+
+4. **Continuous verification in CI**
+  - Added: `.github/workflows/round1-quality-gate.yml`
+  - Runs on push/PR: tests, `openenv validate .`, Docker build, inference smoke run, stdout contract check, determinism artifact upload.
+
+5. **Submission-friendly result schema**
+  - Updated: `inference.py`
+  - `baseline_results.json` now includes `scores_by_task`, `success_rate`, `task_count`, and benchmark metadata for clearer evaluator parsing.
+
+### Latest local verification snapshot
+
+- `pytest -q tests/test_api.py tests/test_grader.py` → **11 passed** ✅
+- `openenv validate .` → **[OK] Ready for multi-mode deployment** ✅
+- `docker build -t abtesting-round1-upgrade .` → **success** ✅
+- `python inference.py > /tmp/inference_upgrade.log` + `scripts/check_inference_stdout.py` → **PASS** ✅
+- `scripts/generate_determinism_report.py --runs 3` → **deterministic=True** ✅
+
+---
+
 ## Phase 7 — Testing & Validation Evidence
 
 ### 1) Full test suite
